@@ -2,17 +2,18 @@
 import torch
 import torch.nn as nn
 
-class Alignment(nn.Module):
-    def __init__(self, aa_encoder, property_encoder, trainable: dict,
-                 cross_hidden_size: int = 128, output_hidden_states=True):
-        super(Alignment, self).__init__()
+class Microbe(nn.Module):
+    def __init__(self, aa_encoder, aa_layer_num, property_encoder, trainable: dict,
+                 cross_hidden_size: int = 128, output_hidden_states=False):
+        super(Microbe, self).__init__()
 
         grad_adjustment(aa_encoder, trainable['aa_encoder'])
         grad_adjustment(property_encoder, trainable['property_encoder'])
 
         self.aa_encoder = aa_encoder
+        self.aa_layer_num = aa_layer_num
         self.property_encoder = property_encoder
-        self._aa_proj = nn.Linear(aa_encoder.embedding_dim, cross_hidden_size, bias=False)
+        self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
         self._property_proj = nn.Linear(property_encoder.embedding_dim, cross_hidden_size, bias=False)
         self._alignment = CrossAttentionFusion(cross_hidden_size, num_heads=8, dropout=0.1)
         self.output_hidden_states = output_hidden_states
@@ -20,9 +21,13 @@ class Alignment(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cross_hidden_size))
         nn.init.normal_(self.cls_token, std=0.02)  # 初始化
 
+        self.classifier = nn.Linear(cross_hidden_size, 1)
+
     def forward(self, aa_seq, property_seq):
-        aa_embedding = self.aa_encoder(aa_seq)   # B, S, H_a
+        aa_embedding = self.aa_encoder(aa_seq, repr_layers=[self.aa_layer_num], return_contacts=True)   # B, S, H_a
+        aa_embedding = aa_embedding['representations'][self.aa_layer_num]
         aa_embedding = self._aa_proj(aa_embedding)  # B, S, H
+
         property_embedding = self.property_encoder(property_seq)
         property_embedding = self._property_proj(property_embedding)
 
@@ -34,11 +39,11 @@ class Alignment(nn.Module):
         crossed_embedding = self._alignment(property_embedding, aa_embedding)
 
         cls_output = crossed_embedding[:, 0, :]  # (B, H)
-
+        pred = self.classifier(cls_output)
         if self.output_hidden_states:
-            return cls_output, crossed_embedding  # 可选：返回完整序列
+            return pred, cls_output  # 分类结果，特征
         else:
-            return cls_output  # 直接返回 [CLS] 表示
+            return pred  # 直接返回分类结果
 
 
 class CrossAttentionFusion(nn.Module):
