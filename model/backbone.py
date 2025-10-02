@@ -14,21 +14,26 @@ class Microbe(nn.Module):
         self.aa_layer_num = aa_layer_num
         self.property_encoder = property_encoder
         self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
-        self._property_proj = nn.Linear(property_encoder.embedding_dim, cross_hidden_size, bias=False)
+        self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
         self._alignment = CrossAttentionFusion(cross_hidden_size, num_heads=8, dropout=0.1)
         self.output_hidden_states = output_hidden_states
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cross_hidden_size))
         nn.init.normal_(self.cls_token, std=0.02)  # 初始化
 
-        self.classifier = nn.Linear(cross_hidden_size, 1)
+        self.classifier = nn.Sequential(
+            nn.Linear(cross_hidden_size, 1),
+            nn.Sigmoid()
+        )
 
     def forward(self, aa_seq, property_seq):
+
         aa_embedding = self.aa_encoder(aa_seq, repr_layers=[self.aa_layer_num], return_contacts=True)   # B, S, H_a
         aa_embedding = aa_embedding['representations'][self.aa_layer_num]
         aa_embedding = self._aa_proj(aa_embedding)  # B, S, H
 
-        property_embedding = self.property_encoder(property_seq)
+        property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
+        property_embedding = property_embedding.hidden_states[-1].float()
         property_embedding = self._property_proj(property_embedding)
 
         B = property_embedding.size(0)
