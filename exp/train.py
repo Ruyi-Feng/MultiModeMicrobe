@@ -30,7 +30,12 @@ def train(args, model, device, loader, data_config, optimizer):
 
         optimizer.zero_grad()
 
-        pred = model(aa_seq_batch, property_seq_batch)
+        pred = model(
+            aa_seq_batch,
+            property_seq_batch,
+            data_config["aa_cls_token_index"],
+            data_config["property_cls_token_index"]
+            )
 
         logits_aa = pred["logits_aa"]
         logits_property = pred["logits_property"]
