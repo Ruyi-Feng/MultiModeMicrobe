@@ -1,6 +1,7 @@
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 class Microbe(nn.Module):
     def __init__(self, aa_encoder, aa_layer_num, property_encoder, trainable: dict,
@@ -15,7 +16,6 @@ class Microbe(nn.Module):
         self.property_encoder = property_encoder
         self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
         self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
-        self._alignment = CrossAttentionFusion(cross_hidden_size, num_heads=8, dropout=0.1)
         self.output_hidden_states = output_hidden_states
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cross_hidden_size))
@@ -26,29 +26,46 @@ class Microbe(nn.Module):
             nn.Sigmoid()
         )
 
-    def forward(self, aa_seq, property_seq):
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+
+    def forward(self, aa_seq, property_seq, aa_cls_token_index=0, property_cls_token_index=0, return_hidden_states=False):
 
         aa_embedding = self.aa_encoder(aa_seq, repr_layers=[self.aa_layer_num], return_contacts=True)   # B, S, H_a
         aa_embedding = aa_embedding['representations'][self.aa_layer_num]
         aa_embedding = self._aa_proj(aa_embedding)  # B, S, H
+        aa_cls_token = aa_embedding[:, aa_cls_token_index, :]
+        aa_embedding = aa_embedding[:, 1:, :]
 
         property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
         property_embedding = property_embedding.hidden_states[-1].float()
-        property_embedding = self._property_proj(property_embedding)
+        property_embedding = self._property_proj(property_embedding)   # 这里还是有seq len在的。所以还是要加cls token来做全局表征。
+        property_cls_token = property_embedding[:, property_cls_token_index, :]
+        property_embedding = property_embedding[:, 1:, :]
 
-        B = property_embedding.size(0)
+        aa_cls_token = aa_cls_token / aa_cls_token.norm(dim=1, keepdim=True)
+        property_cls_token = property_cls_token / property_cls_token.norm(dim=1, keepdim=True)
 
-        # 将可学习的 [CLS] token 扩展到 batch 维度，并拼接到 property 序列开头
-        cls_tokens = self.cls_token.expand(B, -1, -1)  # (1,1,H) -> (B,1,H)
-        property_embedding = torch.cat([cls_tokens, property_embedding], dim=1)  # (B, S_p+1, H)
-        crossed_embedding = self._alignment(property_embedding, aa_embedding)
 
-        cls_output = crossed_embedding[:, 0, :]  # (B, H)
-        pred = self.classifier(cls_output)
+        logit_scale = self.logit_scale.exp()
+        logits_aa = logit_scale * aa_cls_token @ property_cls_token.t()
+        logits_property = logits_aa.t()
+
+
         if self.output_hidden_states:
-            return pred, cls_output  # 分类结果，特征
+            pred = {
+                "aa_representation": aa_cls_token,
+                "property_representation": property_cls_token,
+                "logits_aa": logits_aa,
+                "logits_property": logits_property
+            }
+            return pred
         else:
-            return pred  # 直接返回分类结果
+            pred = {
+                "logits_aa": logits_aa,
+                "logits_property": logits_property
+            }
+            return pred
 
 
 class CrossAttentionFusion(nn.Module):
