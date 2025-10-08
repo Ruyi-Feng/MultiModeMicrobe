@@ -5,7 +5,7 @@ import numpy as np
 
 class Microbe(nn.Module):
     def __init__(self, aa_encoder, aa_layer_num, property_encoder, trainable: dict,
-                 cross_hidden_size: int = 128, output_hidden_states=False):
+                 cross_hidden_size: int = 128):
         super(Microbe, self).__init__()
 
         grad_adjustment(aa_encoder, trainable['aa_encoder'])
@@ -16,7 +16,6 @@ class Microbe(nn.Module):
         self.property_encoder = property_encoder
         self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
         self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
-        self.output_hidden_states = output_hidden_states
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cross_hidden_size))
         nn.init.normal_(self.cls_token, std=0.02)  # 初始化
@@ -52,7 +51,7 @@ class Microbe(nn.Module):
         logits_property = logits_aa.t()
 
 
-        if self.output_hidden_states:
+        if return_hidden_states:
             pred = {
                 "aa_representation": aa_cls_token,
                 "property_representation": property_cls_token,

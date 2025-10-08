@@ -3,6 +3,7 @@ from model.backbone import Microbe
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import esm
 
 def test_backbone():
@@ -27,6 +28,7 @@ def test_load_qwen_decoder():
     model_path = "Qwen/Qwen-1_8B"
     property_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
+
     property_tokenizer.pad_token = "<|endoftext|>"
     property_tokenizer.pad_token_id = property_tokenizer.convert_tokens_to_ids("<|endoftext|>")
     property_encoder = AutoModelForCausalLM.from_pretrained(
@@ -34,6 +36,8 @@ def test_load_qwen_decoder():
         device_map="auto",
         trust_remote_code=True
     )
+
+    property_encoder.resize_token_embeddings(len(property_tokenizer))
     property_encoder = property_encoder.to("cuda")
 
     aa_seq = torch.randint(0, 9, (4, 10)).to("cuda")   # batch = 4, seq_len = 10
@@ -43,8 +47,11 @@ def test_load_qwen_decoder():
         "Domain: Archaea, Phylum: Euryarchaeota, Class: Methanomicrobia, ",
         "Domain: Bacteria, Phylum: Actinobacteriota, Class: Actinobacteria, "
     ]
+
+    descriptions_with_cls = ["<|im_start|> " + desc for desc in descriptions]
+
     property_seq = property_tokenizer(
-        descriptions,
+        descriptions_with_cls,
         return_tensors='pt',            # 返回 PyTorch tensor
         padding=True,                   # 自动 padding 到最长序列
         truncation=True,                # 超长截断
@@ -55,9 +62,18 @@ def test_load_qwen_decoder():
 
     microbe = Microbe(aa_encoder, 33, property_encoder, trainable, cross_hidden_size=512)
     microbe = microbe.to(property_encoder.device)
-    pred = microbe(aa_seq, property_seq)
+    pred = microbe(aa_seq, property_seq, return_hidden_states=True)
 
-    assert pred.shape == (4, 1)
+    aa_representation = pred["aa_representation"]
+    property_representation = pred["property_representation"]
+    logits_aa = pred["logits_aa"]
+    logits_property = pred["logits_property"]
+
+    N = logits_aa.shape[0]
+    labels = torch.arange(N).to(property_encoder.device)
+    loss_a = F.cross_entropy(logits_aa, labels)
+    loss_p = F.cross_entropy(logits_property, labels)
+    loss = (loss_a + loss_p) / 2
 
 
 def test_esm2_as_aaencoder():
