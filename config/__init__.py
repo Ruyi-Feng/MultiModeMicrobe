@@ -1,2 +1,3 @@
 from config.property import get_included_property
-from config.train_settings import args_parser
+from config.train_settings import train_args
+from config.data_provider_settings import data_provider_args
