@@ -2,6 +2,9 @@ import os
 from utils.json_loader import load_json
 from config import get_included_property
 from tqdm import tqdm
+import torch
+from Bio import SeqIO
+
 
 import esm
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
@@ -57,5 +60,52 @@ class DataProvider:
 
 
 class AARepresentation:
-    def __init__(self):
-        pass
+    def __init__(self, args, **kwargs):
+        self.model, alphabet = self.get_model(args.model_name)
+        self.batch_size = args.batch_size
+        self.batch_converter = alphabet.get_batch_converter()
+        self.model.eval()
+        self.dim = self.model.embed_dim
+
+    def get_model(self, model_name="esm2_t33_650M_UR50D"):
+        if model_name == "esm2_t33_650M_UR50D":
+            return esm.pretrained.esm2_t33_650M_UR50D()
+        else:
+            raise ValueError
+
+    def extract_representation(self, batch_tokens, repr_layers):
+        with torch.no_grad():
+            results = self.model(batch_tokens, repr_layers=[33], return_contacts=True)
+        token_representations = results["representations"][33]
+        # Batch, seq_len, repr_dim
+        num_tokens = token_representations.shape[0]
+        sum_repr = token_representations[:, 0, :].sum(0)
+        return sum_repr, num_tokens
+
+    def load_data_in_batch(self, protein_path):
+        records = SeqIO.parse("file.faa", "fasta")
+        buffer = []
+        for i, record in enumerate(records):
+            aa_seq = "<cls> " + str(record.seq)
+            aa_id = record.id
+            buffer.append((aa_id, aa_seq))
+            if ((i % self.batch_size) == 0) and (len(buffer) > 0):
+                batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer)
+                buffer = []
+                yield batch_labels, batch_strs, batch_tokens
+        if len(buffer) > 0:
+            batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer)
+            yield batch_labels, batch_strs, batch_tokens
+
+
+    def get_representation(self, protein_path):
+        # 按每个file做一个循环，分batch load后取平均的repr
+        self.sum_repr = torch.zeros(1, self.dim)
+        self.num_tokens = 0
+        batch_labels, batch_strs, batch_tokens = self.load_data_in_batch(protein_path)
+
+        # 用模型提取representation
+        sum_repr, num_tokens = self.extract_representation(batch_tokens, repr_layers=[33])
+
+        # 返回representation list的形式
+        return aa_representation
