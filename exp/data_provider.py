@@ -83,7 +83,7 @@ class AARepresentation:
         return sum_repr, num_tokens
 
     def load_data_in_batch(self, protein_path):
-        records = SeqIO.parse("file.faa", "fasta")
+        records = SeqIO.parse(protein_path, "fasta")
         buffer = []
         for i, record in enumerate(records):
             aa_seq = "<cls> " + str(record.seq)
@@ -102,10 +102,12 @@ class AARepresentation:
         # 按每个file做一个循环，分batch load后取平均的repr
         self.sum_repr = torch.zeros(1, self.dim)
         self.num_tokens = 0
-        batch_labels, batch_strs, batch_tokens = self.load_data_in_batch(protein_path)
+        for batch_labels, batch_strs, batch_tokens in self.load_data_in_batch(protein_path):
+            sum_repr, num_tokens = self.extract_representation(batch_tokens, repr_layers=[33])
+            self.sum_repr += sum_repr
+            self.num_tokens += num_tokens
 
-        # 用模型提取representation
-        sum_repr, num_tokens = self.extract_representation(batch_tokens, repr_layers=[33])
-
+        # 循环完所有的之后
+        aa_representation = self.sum_repr / self.num_tokens
         # 返回representation list的形式
-        return aa_representation
+        return aa_representation.tolist()
