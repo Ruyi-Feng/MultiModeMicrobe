@@ -3,6 +3,68 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+
+
+class MicrobeCLIP(nn.Module):
+    """
+    这个版本是直接输入esm处理好的aa的representation
+    相当于先不考虑esm的finetune
+    """
+    def __init__(self, aa_layer_num, property_encoder, trainable: dict,
+                 cross_hidden_size: int = 128,
+                 aa_representation_dim: int = 128):
+        super(Microbe, self).__init__()
+
+        grad_adjustment(property_encoder, trainable['property_encoder'])
+
+        self.aa_layer_num = aa_layer_num
+        self.property_encoder = property_encoder
+        self._aa_proj = nn.Linear(aa_representation_dim, cross_hidden_size, bias=False)
+        self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
+
+        self.classifier = nn.Sequential(
+            nn.Linear(cross_hidden_size, 1),
+            nn.Sigmoid()
+        )
+
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+
+    def forward(self, aa_rep, property_seq, aa_cls_token_index=0, property_cls_token_index=0, return_hidden_states=False):
+
+        aa_embedding = self._aa_proj(aa_rep)  # B, S, H
+
+        property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
+        property_embedding = property_embedding.hidden_states[-1].float()
+        property_embedding = self._property_proj(property_embedding)   # 这里还是有seq len在的。所以还是要加cls token来做全局表征。
+        property_cls_token = property_embedding[:, property_cls_token_index, :]
+        property_embedding = property_embedding[:, 1:, :]
+
+        aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
+        property_cls_token = property_cls_token / property_cls_token.norm(dim=1, keepdim=True)
+
+
+        logit_scale = self.logit_scale.exp()
+        logits_aa = logit_scale * aa_embedding @ property_cls_token.t()
+        logits_property = logits_aa.t()
+
+
+        if return_hidden_states:
+            pred = {
+                "aa_representation": aa_embedding,
+                "property_representation": property_cls_token,
+                "logits_aa": logits_aa,
+                "logits_property": logits_property
+            }
+            return pred
+        else:
+            pred = {
+                "logits_aa": logits_aa,
+                "logits_property": logits_property
+            }
+            return pred
+
+
 class Microbe(nn.Module):
     def __init__(self, aa_encoder, aa_layer_num, property_encoder, trainable: dict,
                  cross_hidden_size: int = 128):
@@ -16,9 +78,6 @@ class Microbe(nn.Module):
         self.property_encoder = property_encoder
         self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
         self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
-
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, cross_hidden_size))
-        nn.init.normal_(self.cls_token, std=0.02)  # 初始化
 
         self.classifier = nn.Sequential(
             nn.Linear(cross_hidden_size, 1),
