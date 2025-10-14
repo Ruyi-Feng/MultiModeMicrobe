@@ -1,7 +1,7 @@
 import argparse
 
 
-def args_parser():
+def train_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda')
 
