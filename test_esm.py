@@ -1,5 +1,8 @@
 import torch
 import esm
+import os
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 # Load ESM-2 model
 model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
@@ -8,10 +11,10 @@ model.eval()  # disables dropout for deterministic results
 
 # Prepare data (first 2 sequences from ESMStructuralSplitDataset superfamily / 4)
 data = [
-    ("protein1", "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"),
-    ("protein2", "KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"),
-    ("protein2 with mask","KALTARQQEVFDLIRD<mask>ISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"),
-    ("protein3",  "K A <mask> I S Q"),
+    ("protein1", "<cls> MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"),
+    ("protein2", "<cls> KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"),
+    ("protein2 with mask","<cls> KALTARQQEVFDLIRD<mask>ISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE"),
+    ("protein3",  "<cls> K A <mask> I S Q"),
 ]
 batch_labels, batch_strs, batch_tokens = batch_converter(data)
 batch_lens = (batch_tokens != alphabet.padding_idx).sum(1)
