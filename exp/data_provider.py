@@ -11,8 +11,8 @@ from pathlib import Path
 from config import data_provider_args
 
 import esm
-from esm.models.esmc import ESMC
-from esm.sdk.api import ESMProtein, LogitsConfig
+# from esm.models.esmc import ESMC
+# from esm.sdk.api import ESMProtein, LogitsConfig
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
