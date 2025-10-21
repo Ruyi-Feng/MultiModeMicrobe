@@ -1,10 +1,11 @@
 from torch.utils.data import Dataset
 import torch
+import os
+import h5py
 
 
 
-
-class ContrastiveDataset(Dataset):
+class CollectiveDataset(Dataset):
     def __init__(self, args, **kwargs):
         self.init_train_index(args.index_path)
         self.dataset_length = len(self.train_idx)
@@ -22,17 +23,17 @@ class ContrastiveDataset(Dataset):
             self.train_idx.append([line[0],
                                    int(line[1]),
                                    int(line[2]),
-                                   int(line[3]),
-                                   int(line[4])])
+                                   int(line[3])])
+            # bacdive_id, txt_head, txt_tail, aa_index
 
     def __getitem__(self, index: int):
         """
         return:
         aa_seq_batch, property_seq_batch
         """
-        key, txt_head, txt_tail, aa_head, aa_tail = self.train_idx[index]
+        key, txt_head, txt_tail, aa_index = self.train_idx[index]
         description = self.txt_loader(txt_head, txt_tail)
-        aa_representation = self.aa_loader(aa_head, aa_tail)
+        aa_representation = self.aa_loader(aa_index)
         return description, aa_representation
 
     def __len__(self):
@@ -41,7 +42,7 @@ class ContrastiveDataset(Dataset):
 
 class BinaryDataLoader:
     def __init__(self, data_path):
-        self.f_data = open(self.data_path, 'rb')
+        self.f_data = open(data_path, 'rb')
 
     def data_converter(self, info):
         raise NotImplementedError
@@ -54,10 +55,27 @@ class BinaryDataLoader:
     def __del__(self):
         self.f_data.close()
 
-class TxtDataLoader(BinaryDataLoader):
-    def data_converter(self, info):
-        return "<|im_start|> " + info
 
-class AaDataLoader(BinaryDataLoader):
+class TxtDataLoader(BinaryDataLoader):
+    def __init__(self, data_path):
+        data_path = os.path.join(data_path, "property.bin")
+        super(TxtDataLoader, self).__init__(data_path)
+
     def data_converter(self, info):
-        pass
+        return "<|im_start|> " + info.decode()
+
+
+class AaDataLoader:
+    def __init__(self, data_path):
+        self.h5_path = os.path.join(data_path, "microbe.h5")
+        # 打开一次，但不加载数据
+        with h5py.File(self.h5_path, 'r') as f:
+            self.length = f.attrs['index']
+
+    def __len__(self):
+        return self.length
+
+    def __call__(self, idx):
+        with h5py.File(self.h5_path, 'r') as f:
+            feature = f['microbe_features'][idx]  # 只读index
+        return torch.tensor(feature, dtype=torch.float32)
