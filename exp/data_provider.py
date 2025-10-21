@@ -1,16 +1,16 @@
-import os
-from utils.json_loader import load_json, save_json
-from config import get_included_property
-from tqdm import tqdm
-import torch
-from Bio import SeqIO
-import h5py
 
-import numpy as np
+from Bio import SeqIO
+from config import get_included_property, data_provider_args
 from pathlib import Path
-from config import data_provider_args
+from tqdm import tqdm
+from utils.json_loader import load_json, save_json
 
 import esm
+import h5py
+import numpy as np
+import os
+import time
+import torch
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
@@ -19,9 +19,9 @@ class DataProvider:
     def __init__(self, data_dir, save_path, **kwargs):
         self.data_dir = data_dir
         self.save_path = save_path
-        self.save_collective_representation = True
-        self._init_data()
         args = data_provider_args()
+        self.save_collective_representation = args.collective
+        self._init_data()
         self.aa_rep_extractor = ESM2Representation(args)
         # self.aa_rep_extractor = ESMCRepresentation(args)
 
@@ -59,15 +59,11 @@ class DataProvider:
 
     def _generate_individual_protein_repr(self, protein_path, bacdive_id):
         self.protein_index.setdefault(bacdive_id, [])
-        last_id = None
-        id_repr = self.aa_rep_extractor.get_individual_representation(protein_path)
-        for protein_id, aa_representation in id_repr.items():
-            aa_index = self.aa_storage.append(aa_representation, protein_id, protein_path)
-            if last_id != protein_id:
-                self.protein_index[bacdive_id].append([aa_index])
-                last_id = protein_id
-            else:
-                self.protein_index[bacdive_id][-1].append(aa_index)
+        self.protein_index = self.aa_rep_extractor.get_individual_representation(protein_path,
+                                                                                        self.aa_storage,
+                                                                                        self.protein_index,
+                                                                                        bacdive_id)
+
 
     def _generate_index(self, bacdive_id, property_head, property_tail, aa_index=None):
         if aa_index is None:
@@ -79,17 +75,26 @@ class DataProvider:
 
     def _generate(self):
         for item in tqdm(self.overview):
+            time0 = time.time()
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
             property_head, property_tail = self._generate_property(property_info)
             protein_path = item["Protein_Paths"][0]
             protein_path = os.path.join(self.data_dir, protein_path)
+            property_time = time.time()
+            print(f"property time: {property_time - time0}")
             if self.save_collective_representation:
                 aa_index = self._generate_collective_protein_repr(protein_path)
+                collective_time = time.time()
+                print(f"collective time: {collective_time - property_time}")
                 self._generate_index(item["BacDive ID"], property_head, property_tail, aa_index)
+                print(f"index time: {time.time() - collective_time}")
             else:
                 # 保留菌株中每个protein的原始的repr
-                aa_index = self._generate_individual_protein_repr(protein_path, item["BacDive ID"])
+                self._generate_individual_protein_repr(protein_path, item["BacDive ID"])
+                individual_time = time.time()
+                print(f"individual time: {individual_time - property_time}")
                 self._generate_index(item["BacDive ID"], property_head, property_tail)
+                print(f"index time: {time.time() - individual_time}")
         if not self.save_collective_representation:
             save_json(self.protein_index, os.path.join(self.save_path, "protein_index.json"))
         print("finish generate")
@@ -166,10 +171,16 @@ class ESM2Representation:
         if model_name == "esm2_t33_650M_UR50D":
             self.repr_layers_num = 33
             return esm.pretrained.esm2_t33_650M_UR50D()
+        if model_name == "esm2_t30_150M_UR50D":
+            self.repr_layers_num = 30
+            return esm.pretrained.esm2_t30_150M_UR50D()
+        if model_name == "esm2_t12_35M_UR50D":
+            self.repr_layers_num = 12
+            return esm.pretrained.esm2_t12_35M_UR50D()
         else:
             raise ValueError
 
-    def extract_collective_repr(self, batch_tokens, repr_layers):
+    def _extract_collective_repr(self, batch_tokens, repr_layers):
         results = self.model(batch_tokens, repr_layers=[repr_layers], return_contacts=True)
         token_representations = results["representations"][repr_layers]
         # Batch, seq_len, repr_dim
@@ -177,14 +188,15 @@ class ESM2Representation:
         sum_repr = token_representations[:, 0, :].sum(0)
         return sum_repr.cpu(), num_tokens
 
-    def extract_individual_repr(self, batch_tokens, repr_layers):
+    def _extract_individual_repr(self, batch_tokens, repr_layers):
+        print("shape: ", batch_tokens.shape)
         results = self.model(batch_tokens, repr_layers=[repr_layers], return_contacts=True)
         token_representations = results["representations"][repr_layers]
         # Batch, seq_len, repr_dim
         sum_repr = token_representations[:, 0, :]
         return sum_repr.cpu()
 
-    def load_data_in_batch(self, protein_path, collective=True):
+    def _load_data_in_batch(self, protein_path, collective=True):
         # --- 现在的写法没有定batch的上限。一个protein很长的情况也会被切在一个batch里，因此可能有内存爆炸的风险。
         records = SeqIO.parse(protein_path, "fasta")
         buffer = []
@@ -202,7 +214,7 @@ class ESM2Representation:
                     for i in range(0, len(aa_seq), self.cut_off - 1):
                         seq_fragment = "<cls> " + aa_seq[i:i + self.cut_off]
                         buffer.append((aa_id, seq_fragment))
-            if (i > self.batch_size):
+            if (len(buffer) > self.batch_size):
                 batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer)
                 buffer = []
                 yield batch_labels, batch_strs, batch_tokens
@@ -210,16 +222,28 @@ class ESM2Representation:
             batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer)
             yield batch_labels, batch_strs, batch_tokens
 
-
-    def get_individual_representation(self, protein_path):
+    def get_individual_representation(self, protein_path, aa_storage, protein_index, bacdive_id):
         # 保留protein的原始repr。超长的拆成了多个repr，对应的protein id保留用于识别是否是一个
+        # 整个file的repr边算边存，不然太大了
         self.model.eval()
+        last_id = None
         with torch.no_grad():
-            for batch_labels, batch_strs, batch_tokens in tqdm(self.load_data_in_batch(protein_path, collective=False)):
+            for batch_labels, batch_strs, batch_tokens in tqdm(self._load_data_in_batch(protein_path, collective=False)):
+                t0 = time.time()
                 batch_tokens = batch_tokens.to(self.device)
-                batch_reprs = self.extract_individual_repr(batch_tokens, repr_layers=[self.repr_layers_num])   # batch, dim
-                # 这里传来了batch个repr，根据batch labels找到他们的protein名称，成对返回。
-                return zip(batch_labels, batch_reprs)
+                batch_reprs = self._extract_individual_repr(batch_tokens, repr_layers=self.repr_layers_num)   # batch, dim
+                t1 = time.time()
+                print(f"extract time: {t1 - t0}")
+                for protein_id, aa_representation in zip(batch_labels, batch_reprs):
+                    aa_index = aa_storage.append(aa_representation, protein_id, protein_path)
+                    if last_id != protein_id:
+                        protein_index[bacdive_id].append([aa_index])
+                        last_id = protein_id
+                    else:
+                        protein_index[bacdive_id][-1].append(aa_index)
+                t2 = time.time()
+                print(f"append time: {t2 - t1}")
+            return protein_index
 
     def get_collective_representation(self, protein_path):
         # 按每个file做一个循环，分batch load后取平均的repr
@@ -227,9 +251,9 @@ class ESM2Representation:
         self.num_tokens = 0
         self.model.eval()
         with torch.no_grad():
-            for batch_labels, batch_strs, batch_tokens in tqdm(self.load_data_in_batch(protein_path, collective=True)):
+            for batch_labels, batch_strs, batch_tokens in tqdm(self._load_data_in_batch(protein_path, collective=True)):
                 batch_tokens = batch_tokens.to(self.device)
-                sum_repr, num_tokens = self.extract_collective_repr(batch_tokens, repr_layers=[self.repr_layers_num])
+                sum_repr, num_tokens = self._extract_collective_repr(batch_tokens, repr_layers=self.repr_layers_num)
                 self.sum_repr += sum_repr
                 self.num_tokens += num_tokens
 
@@ -281,7 +305,7 @@ class CollectiveFeatureStorage:
     def append(self, aa_representation: np.ndarray, protein_path: str):
         """
         追加一条新的古菌特征
-        :param aa_representation: 形状为 (2048,) 或 (1, 2048) 的 numpy 数组
+        :param aa_representation: 形状为 (d,) 或 (1, d) 的 numpy 数组
         :param protein_path: 古菌包含蛋白质文件路径（字符串）
         :return: 返回该条数据的 index
         """
@@ -348,7 +372,6 @@ class IndividualFeatureStorage:
                 # 保存当前索引（模拟“计数器”）
                 f.attrs['index'] = 0
 
-
     def append(self, aa_representation: np.ndarray, protein_id: str, microbe_id: str):
         """
         追加一条新的protein 特征数据
@@ -385,4 +408,3 @@ class IndividualFeatureStorage:
             f.attrs['index'] = current_index + 1
 
             return current_index  # 返回当前 index
-
