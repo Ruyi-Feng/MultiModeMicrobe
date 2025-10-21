@@ -19,6 +19,7 @@ class DataProvider:
     def __init__(self, data_dir, save_path, **kwargs):
         self.data_dir = data_dir
         self.save_path = save_path
+        self.no_exist_path = []
         args = data_provider_args()
         self.save_collective_representation = args.collective
         self._init_data()
@@ -80,6 +81,12 @@ class DataProvider:
             property_head, property_tail = self._generate_property(property_info)
             protein_path = item["Protein_Paths"][0]
             protein_path = os.path.join(self.data_dir, protein_path)
+
+            # 检验文件是否存在
+            if not os.path.exists(protein_path):
+                self.no_exist_path.append(os.path.split(protein_path)[-1])
+                continue
+
             property_time = time.time()
             print(f"property time: {property_time - time0}")
             if self.save_collective_representation:
@@ -98,6 +105,7 @@ class DataProvider:
         if not self.save_collective_representation:
             save_json(self.protein_index, os.path.join(self.save_path, "protein_index.json"))
         print("finish generate")
+        print(f"no exist path: {self.no_exist_path}")
 
 
 class ESMCRepresentation:
