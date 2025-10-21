@@ -10,5 +10,5 @@ if __name__ == '__main__':
     # tests.test_load_qwen_decoder()
     # tests.test_aa_seq_load()
     # tests.test_aa_provider()
-    tests.test_data_provider()
-
+    # tests.test_data_provider()
+    tests.test_data_loader()

@@ -1,7 +1,9 @@
 
 from Bio import SeqIO
 from exp.data_provider import ESM2Representation, DataProvider
-from config import data_provider_args
+from exp.dataset import CollectiveDataset
+from config import data_provider_args, train_args
+from torch.utils.data import DataLoader
 import os
 
 
@@ -40,3 +42,14 @@ def test_data_provider():
     data_dir = f"C:\\Users\\User\\WorkSpace\\data\\Zhiling\\aaseq_microbe\\examples\\"
     save_path = f"C:\\Users\\User\\WorkSpace\\data\\Zhiling\\aaseq_microbe\\train_data"
     DataProvider(data_dir, save_path)
+
+
+def test_data_loader():
+    args = train_args()
+    dataset = CollectiveDataset(args)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+
+    for description, aa_repr in dataloader:
+        print("property description: ",description)
+        print("protein repr: ", aa_repr.shape)
+        break
