@@ -202,13 +202,13 @@ class ESM2Representation:
         buffer = []
         for i, record in enumerate(records):
             if collective:
-                aa_seq = "<cls> " + str(record.seq)
+                aa_seq = "<cls> " + str(record.seq)[:-1]
                 aa_id = record.id
                 if len(aa_seq) > self.cut_off:
                     aa_seq = aa_seq[:self.cut_off]
                 buffer.append((aa_id, aa_seq))
             else:
-                aa_seq = str(record.seq)
+                aa_seq = str(record.seq)[:-1]
                 aa_id = record.id
                 if len(aa_seq) > self.cut_off:
                     for i in range(0, len(aa_seq), self.cut_off - 1):
