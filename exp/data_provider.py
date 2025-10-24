@@ -29,7 +29,6 @@ class DataProvider:
         if self.save_collective_representation:
             self.aa_storage = CollectiveFeatureStorage(self.save_path, max_shape=(None, self.aa_rep_extractor.dim))
         else:
-            self.aa_storage = IndividualFeatureStorage(self.save_path, max_shape=(None, self.aa_rep_extractor.dim))
             self.protein_index = dict()
         overview = os.path.join(data_dir, "microbex_data_with_protein.json")
         self.overview = load_json(overview)
@@ -59,11 +58,18 @@ class DataProvider:
         return aa_index
 
     def _generate_individual_protein_repr(self, protein_path, bacdive_id):
+        """
+        protein_index:
+        {
+            "bacdive_id": [[aa_index], [aa_index], [aa_index, aa_index], ...]  # 每个蛋白的index放在同一个列表里，用于区分
+        }
+        """
         self.protein_index.setdefault(bacdive_id, [])
-        self.protein_index = self.aa_rep_extractor.get_individual_representation(protein_path,
-                                                                                        self.aa_storage,
-                                                                                        self.protein_index,
-                                                                                        bacdive_id)
+        self.protein_index = self.aa_rep_extractor.get_individual_representation(protein_path=protein_path,
+                                                                                 save_path=self.save_path,
+                                                                                 max_shape=(None, self.aa_rep_extractor.dim),
+                                                                                 protein_index=self.protein_index,
+                                                                                 bacdive_id=bacdive_id)
 
 
     def _generate_index(self, bacdive_id, property_head, property_tail, aa_index=None):
@@ -75,7 +81,11 @@ class DataProvider:
             self.index_f.write(idx_s)
 
     def _generate(self):
+        i = 0
         for item in tqdm(self.overview):
+            i += 1
+            if i > 3:
+                break
             time0 = time.time()
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
             property_head, property_tail = self._generate_property(property_info)
@@ -88,18 +98,18 @@ class DataProvider:
                 continue
 
             property_time = time.time()
-            print(f"property time: {property_time - time0}")
+            print(f"property time: {(property_time - time0):.2f}")
             if self.save_collective_representation:
                 aa_index = self._generate_collective_protein_repr(protein_path)
-                collective_time = time.time()
-                print(f"collective time: {collective_time - property_time}")
+                # collective_time = time.time()
+                # print(f"collective time: {collective_time - property_time}")
                 self._generate_index(item["BacDive ID"], property_head, property_tail, aa_index)
-                print(f"index time: {time.time() - collective_time}")
+                # print(f"index time: {time.time() - collective_time}")
             else:
                 # 保留菌株中每个protein的原始的repr
                 self._generate_individual_protein_repr(protein_path, item["BacDive ID"])
                 individual_time = time.time()
-                print(f"individual time: {individual_time - property_time}")
+                print(f"individual time: {(individual_time - property_time):.2f}")
                 self._generate_index(item["BacDive ID"], property_head, property_tail)
                 print(f"index time: {time.time() - individual_time}")
         if not self.save_collective_representation:
@@ -197,7 +207,6 @@ class ESM2Representation:
         return sum_repr.cpu(), num_tokens
 
     def _extract_individual_repr(self, batch_tokens, repr_layers):
-        print("shape: ", batch_tokens.shape)
         results = self.model(batch_tokens, repr_layers=[repr_layers], return_contacts=True)
         token_representations = results["representations"][repr_layers]
         # Batch, seq_len, repr_dim
@@ -230,18 +239,24 @@ class ESM2Representation:
             batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer)
             yield batch_labels, batch_strs, batch_tokens
 
-    def get_individual_representation(self, protein_path, aa_storage, protein_index, bacdive_id):
+    def get_individual_representation(self, protein_path, save_path, max_shape, protein_index, bacdive_id):
         # 保留protein的原始repr。超长的拆成了多个repr，对应的protein id保留用于识别是否是一个
-        # 整个file的repr边算边存，不然太大了
+        # 整个file的repr边算边存
+        # 每个古菌都用一个单独的h5来存储。
         self.model.eval()
         last_id = None
+        # i = 0
+        aa_storage = IndividualFeatureStorage(save_path, bacdive_id + ".h5", max_shape)
         with torch.no_grad():
-            for batch_labels, batch_strs, batch_tokens in tqdm(self._load_data_in_batch(protein_path, collective=False)):
+            pbar = tqdm(self._load_data_in_batch(protein_path, collective=False))
+            for batch_labels, batch_strs, batch_tokens in pbar:
+                # i += 1
+                # if i > 3:
+                #     break
                 t0 = time.time()
                 batch_tokens = batch_tokens.to(self.device)
                 batch_reprs = self._extract_individual_repr(batch_tokens, repr_layers=self.repr_layers_num)   # batch, dim
                 t1 = time.time()
-                print(f"extract time: {t1 - t0}")
                 for protein_id, aa_representation in zip(batch_labels, batch_reprs):
                     aa_index = aa_storage.append(aa_representation, protein_id, protein_path)
                     if last_id != protein_id:
@@ -250,7 +265,7 @@ class ESM2Representation:
                     else:
                         protein_index[bacdive_id][-1].append(aa_index)
                 t2 = time.time()
-                print(f"append time: {t2 - t1}")
+                pbar.set_description(f"extract time: {(t1 - t0):.2f}, append time: {(t2 - t1):.2f}")
             return protein_index
 
     def get_collective_representation(self, protein_path):
@@ -272,7 +287,7 @@ class ESM2Representation:
 
 
 class CollectiveFeatureStorage:
-    def __init__(self, save_path, max_shape=(None, 2048), chunk_size=1000, dtype='float32'):
+    def __init__(self, save_path, file_name="microbe.h5", max_shape=(None, 2048), chunk_size=1000, dtype='float32'):
         """
         初始化 HDF5 存储
         :param h5_path: HDF5 文件路径
@@ -281,7 +296,7 @@ class CollectiveFeatureStorage:
         :param dtype: 数据类型
         """
 
-        self.h5_path = os.path.join(save_path, "microbe.h5")
+        self.h5_path = os.path.join(save_path, file_name)
         self.chunk_size = chunk_size
         self.dtype = dtype
 
@@ -345,8 +360,8 @@ class CollectiveFeatureStorage:
 
 
 class IndividualFeatureStorage:
-    def __init__(self, save_path, max_shape=(None, 2048), chunk_size=1000, dtype='float32'):
-        self.h5_path = os.path.join(save_path, "microbe.h5")
+    def __init__(self, save_path, file_name="microbe.h5", max_shape=(None, 2048), chunk_size=1000, dtype='float32'):
+        self.h5_path = os.path.join(save_path, file_name)
         self.chunk_size = chunk_size
         self.dtype = dtype
 
