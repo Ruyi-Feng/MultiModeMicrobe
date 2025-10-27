@@ -9,18 +9,22 @@ class MicrobeCLIP(nn.Module):
     """
     这个版本是直接输入esm处理好的aa的representation
     相当于先不考虑esm的finetune
+    默认是collective的
+    individual的时候,输入的aa_encoder用来处理microbe的多个蛋白质序列获得菌株总体表征
     """
-    def __init__(self, aa_layer_num, property_encoder, trainable: dict,
+    def __init__(self,
+                 property_encoder,
+                 trainable: dict,
+                 aa_encoder = None,
+                 collective: bool = True,
                  cross_hidden_size: int = 128,
                  aa_representation_dim: int = 128):
-        super(Microbe, self).__init__()
+        super(MicrobeCLIP, self).__init__()
 
-        grad_adjustment(property_encoder, trainable['property_encoder'])
+        self.collective = collective
 
-        self.aa_layer_num = aa_layer_num
-        self.property_encoder = property_encoder
-        self._aa_proj = nn.Linear(aa_representation_dim, cross_hidden_size, bias=False)
-        self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
+        self._init_aa_net(aa_encoder, trainable, aa_representation_dim, cross_hidden_size)
+        self._init_property_net(property_encoder, trainable, cross_hidden_size)
 
         self.classifier = nn.Sequential(
             nn.Linear(cross_hidden_size, 1),
@@ -29,25 +33,58 @@ class MicrobeCLIP(nn.Module):
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
+    def _init_property_net(self, property_encoder, trainable, cross_hidden_size):
+        grad_adjustment(property_encoder, trainable['property_encoder'])
+        self.property_encoder = property_encoder
+        self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
 
-    def forward(self, aa_rep, property_seq, aa_cls_token_index=0, property_cls_token_index=0, return_hidden_states=False):
+    def _init_aa_net(self, aa_encoder, trainable, aa_representation_dim, cross_hidden_size):
+        if not self.collective:
+            if aa_encoder is None:
+                raise ValueError("aa_encoder must be provided when collective is False")
+            # 用于贴在前面提取表征的向量
+            self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim))
+            grad_adjustment(aa_encoder, trainable['aa_encoder'])
+            self.aa_encoder = aa_encoder
 
-        aa_embedding = self._aa_proj(aa_rep)  # B, S, H
+        if self.collective and aa_encoder is not None:
+            self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+        else:
+            self._aa_proj = nn.Linear(aa_representation_dim, cross_hidden_size, bias=False)
 
+
+    def _forward_property(self, property_seq, property_cls_token_index=None):
         property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
         property_embedding = property_embedding.hidden_states[-1].float()
         property_embedding = self._property_proj(property_embedding)   # 这里还是有seq len在的。所以还是要加cls token来做全局表征。
-        property_cls_token = property_embedding[:, property_cls_token_index, :]
+        if property_cls_token_index is None:
+            property_cls_token = property_embedding[:, 0, :]
+        else:
+            batch_size = property_embedding.size(0)
+            property_cls_token = property_embedding[torch.arange(batch_size), property_cls_token_index, :]
         property_embedding = property_embedding[:, 1:, :]
+        return property_embedding, property_cls_token
+
+    def _forward_aa(self, aa_rep):
+        if self.collective:
+            if aa_rep.ndim != 2:
+                raise ValueError("aa_rep must be 2D (batch, dim) when collective is True, please use collective features")
+            aa_embedding = self._aa_proj(aa_rep)  # B, H
+            return aa_embedding
+        else:
+            pass
+
+    def forward(self, aa_rep, property_seq, property_cls_token_index=None, return_hidden_states=False):
+
+        aa_embedding = self._forward_aa(aa_rep)
+        _, property_cls_token = self._forward_property(property_seq, property_cls_token_index)
 
         aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
         property_cls_token = property_cls_token / property_cls_token.norm(dim=1, keepdim=True)
 
-
         logit_scale = self.logit_scale.exp()
         logits_aa = logit_scale * aa_embedding @ property_cls_token.t()
         logits_property = logits_aa.t()
-
 
         if return_hidden_states:
             pred = {
@@ -66,6 +103,10 @@ class MicrobeCLIP(nn.Module):
 
 
 class Microbe(nn.Module):
+    """
+    这个code没什么用，输入的aa是一条蛋白质序列。
+    但实际上要么输入整个microbe collective 表征，要么输入全部aa序列提取总体表征
+    """
     def __init__(self, aa_encoder, aa_layer_num, property_encoder, trainable: dict,
                  cross_hidden_size: int = 128):
         super(Microbe, self).__init__()
