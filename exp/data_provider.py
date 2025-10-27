@@ -81,11 +81,11 @@ class DataProvider:
             self.index_f.write(idx_s)
 
     def _generate(self):
-        i = 0
+        # i = 0
         for item in tqdm(self.overview):
-            i += 1
-            if i > 3:
-                break
+            # i += 1
+            # if i > 3:
+            #     break
             time0 = time.time()
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
             property_head, property_tail = self._generate_property(property_info)
@@ -231,8 +231,11 @@ class ESM2Representation:
                     for i in range(0, len(aa_seq), self.cut_off - 1):
                         seq_fragment = "<cls> " + aa_seq[i:i + self.cut_off]
                         buffer.append((aa_id, seq_fragment))
+                else:
+                    buffer.append((aa_id, "<cls> " + aa_seq))
+
             if (len(buffer) > self.batch_size):
-                batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer)
+                batch_labels, batch_strs, batch_tokens = self.batch_converter(buffer[:self.batch_size])
                 buffer = []
                 yield batch_labels, batch_strs, batch_tokens
         if len(buffer) > 0:
