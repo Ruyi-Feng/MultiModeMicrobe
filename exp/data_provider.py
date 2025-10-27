@@ -15,6 +15,29 @@ import torch
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 class DataProvider:
+    """
+    Individual 数据存储形式
+    overall index
+    -------------
+    每行是一条数据: [bacdive_id, txt_head, txt_tail]
+
+    protein_index
+    -------------
+    用于区分每个古菌的蛋白质是否被拆成了多个index
+    {
+        "bacdive_id": [[aa_idx, aa_idx],   一个蛋白放在一个list里
+                       [aa_idx, aa_idx],
+                       ...]
+    }
+
+    saved h5 file
+    -------------
+    用于存储每个蛋白的representation
+    以bacdive id为文件名 “bacdive_id.h5”
+    按index读取数据即可
+    数据库有: protein_features, protein_id, microbe_id
+    """
+
 
     def __init__(self, data_dir, save_path, **kwargs):
         self.data_dir = data_dir
