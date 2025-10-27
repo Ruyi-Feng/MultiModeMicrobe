@@ -72,7 +72,12 @@ class MicrobeCLIP(nn.Module):
             aa_embedding = self._aa_proj(aa_rep)  # B, H
             return aa_embedding
         else:
-            pass
+            # 这里aa_encoder用一个attention
+            cls_token = self.protein_cls_token.expand(aa_rep.size(0), -1, -1)
+            aa_rep = torch.concat([cls_token, aa_rep], dim=1)
+            aa_embedding = self.aa_encoder(aa_rep)
+            aa_embedding = self._aa_proj(aa_embedding)
+            return aa_embedding
 
     def forward(self, aa_rep, property_seq, property_cls_token_index=None, return_hidden_states=False):
 
@@ -214,6 +219,31 @@ class CrossAttention(nn.Module):
             need_weights=False
         )
         return attn_output, attn_weights
+
+
+class MicrobeProteinRepr(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Linear(embed_dim * 4, embed_dim)
+        )
+
+    def forward(self, x):
+        attn_out, _ = self.self_attn(
+            query=x,
+            key=x,
+            value=x
+        )
+        out = self.norm(x + attn_out)
+        out = self.norm(out + self.ffn(out))
+        repr = out[:, 0, :]
+        return repr
+
 
 class LLMDecoder(nn.Module):
     def __init__(self, head_module, llm_decoder, trainable: dict, cross_hidden_size: int = 128):
