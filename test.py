@@ -12,4 +12,6 @@ if __name__ == '__main__':
     # tests.test_aa_provider()
     # tests.test_data_provider()
     # tests.test_collective_data_loader()
-    tests.test_individual_data_loader()
+    # tests.test_individual_data_loader()
+    # tests.test_collective_clip()
+    tests.test_individual_clip()
