@@ -47,17 +47,22 @@ def load_model(args):
                  }
     property_encoder, property_tokenizer = get_property_encoder(args.property_model_path, args.device)
     if args.collective:
-        aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_encoder_hidden_size,
+        aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_repr_dim,
+                                        num_layers=args.aa_encoder_num_layers,
                                         num_heads=args.aa_encoder_num_heads,
                                         dropout=args.aa_encoder_dropout,)
         backbone = MicrobeCLIP(property_encoder,
                                trainable=trainable,
                                aa_encoder=aa_encoder,
-                               collective=args.collective)
+                               collective=args.collective,
+                               cross_hidden_size=args.cross_hidden_size,
+                               aa_representation_dim=args.aa_repr_dim)
     else:
         backbone = MicrobeCLIP(property_encoder,
                                trainable=trainable,
-                               collective=args.collective)
+                               collective=args.collective,
+                               cross_hidden_size=args.cross_hidden_size,
+                               aa_representation_dim=args.aa_repr_dim)
     return backbone, property_tokenizer
 
 def init_optimizer(args, model):
@@ -79,7 +84,7 @@ def init_optimizer(args, model):
     )
 
     scheduler = CosineAnnealingLR(
-        optimizer, T_max=args.total_steps, eta_min=args.lr * 0.01
+        optimizer, T_max=args.epoch, eta_min=args.lr * 0.01
         )
     return optimizer, scheduler
 
@@ -104,10 +109,11 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch):
 
     model.to(args.device)
     model.train()
+    end = time.time()
 
     for i, batch_data in enumerate(loader):
         # 使用dataloader获取aa和property pairs
-        batch_a, batch_p = batch_data
+        batch_p, batch_a = batch_data
         # aa B, S
         # property item B, S, H
 
@@ -130,10 +136,10 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch):
         loss_p = F.cross_entropy(logits_p, labels)
         loss = (loss_a + loss_p) / 2
 
-        acc1, acc5 = clip_accuracy(loss_a, loss_p, topk=(1, 5))
-        losses.update(loss.item(), batch_p.size(0))
-        top1.update(acc1[0], batch_p.size(0))
-        top5.update(acc5[0], batch_p.size(0))
+        acc1, acc5 = clip_accuracy(logits_a, logits_p, topk=(1, 5))
+        losses.update(loss.item(), batch_a.size(0))
+        top1.update(acc1.item(), batch_a.size(0))
+        top5.update(acc5.item(), batch_a.size(0))
 
         optimizer.zero_grad()
         loss.backward()
@@ -153,7 +159,7 @@ def main():
     model, property_tokenizer = load_model(args)
     optimizer, scheduler = init_optimizer(args, model)
 
-    for epoch in range(args.start_epoch, args.epochs):
+    for epoch in range(args.start_epoch, args.epoch):
 
         scheduler.step()
         train(args, model, property_tokenizer, train_loader, optimizer, epoch)

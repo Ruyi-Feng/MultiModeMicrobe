@@ -47,11 +47,13 @@ class MicrobeCLIP(nn.Module):
             grad_adjustment(aa_encoder, trainable['aa_encoder'])
             self.aa_encoder = aa_encoder
 
-        if self.collective and aa_encoder is not None:
-            self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
-        else:
+        if self.collective:
             self._aa_proj = nn.Linear(aa_representation_dim, cross_hidden_size, bias=False)
-
+        else:
+            if aa_encoder is not None:
+                self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+            else:
+                raise ValueError("aa_encoder must be provided when collective is True")
 
     def _forward_property(self, property_seq, property_cls_token_index=None):
         property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
@@ -195,6 +197,7 @@ class CrossAttentionFusion(nn.Module):
         out = self.norm(out + self.ffn(out))
         return out  # 对齐后的文本表示
 
+
 class CrossAttention(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout):
         super().__init__()
@@ -222,9 +225,10 @@ class CrossAttention(nn.Module):
 
 
 class MicrobeProteinRepr(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout):
+    def __init__(self, embed_dim, num_layers, num_heads, dropout):
         super().__init__()
         self.embed_dim = embed_dim
+        self.num_layers = num_layers
         self.self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout, batch_first=True)
         self.norm = nn.LayerNorm(embed_dim)
         self.ffn = nn.Sequential(
@@ -234,14 +238,15 @@ class MicrobeProteinRepr(nn.Module):
         )
 
     def forward(self, x):
-        attn_out, _ = self.self_attn(
-            query=x,
-            key=x,
-            value=x
-        )
-        out = self.norm(x + attn_out)
-        out = self.norm(out + self.ffn(out))
-        repr = out[:, 0, :]
+        for i in range(self.num_layers):
+            attn_out, _ = self.self_attn(
+                query=x,
+                key=x,
+                value=x
+            )
+            x = self.norm(x + attn_out)
+            x = self.norm(x + self.ffn(x))
+        repr = x[:, 0, :]
         return repr
 
 
