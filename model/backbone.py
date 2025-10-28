@@ -79,9 +79,9 @@ class MicrobeCLIP(nn.Module):
             aa_embedding = self._aa_proj(aa_embedding)
             return aa_embedding
 
-    def forward(self, aa_rep, property_seq, property_cls_token_index=None, return_hidden_states=False):
+    def forward(self, aa_seq, property_seq, property_cls_token_index=None, return_hidden_states=False):
 
-        aa_embedding = self._forward_aa(aa_rep)
+        aa_embedding = self._forward_aa(aa_seq)
         _, property_cls_token = self._forward_property(property_seq, property_cls_token_index)
 
         aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
