@@ -25,9 +25,9 @@ def load_train_data(args):
     return train_loader
 
 def property_converter(property_seq, property_tokenizer, device="cuda"):
-    descriptions_with_cls = ["<|im_start|> " + desc + "<|endoftext|>" for desc in property_seq]
+    seq_with_cls = ["<|im_start|> " + seq + "<|endoftext|>" for seq in property_seq]
     property_seq = property_tokenizer(
-        descriptions_with_cls,
+        seq_with_cls,
         return_tensors='pt',            # 返回 PyTorch tensor
         padding=True,                   # 自动 padding 到最长序列
         truncation=True,                # 超长截断
@@ -83,7 +83,7 @@ def init_optimizer(args, model):
         )
     return optimizer, scheduler
 
-def train(args, model, property_tokenizer, loader, optimizer, epoch):
+def train(args, model, tokenizer_p, loader, optimizer, epoch):
     """
     这里接收的都是定义好的model, device, loader, optimizer
     其中loader是对比学习的loader,已经直接加载了对比学习的mini batch的
@@ -107,33 +107,33 @@ def train(args, model, property_tokenizer, loader, optimizer, epoch):
 
     for i, batch_data in enumerate(loader):
         # 使用dataloader获取aa和property pairs
-        aa_seq_batch, property_seq_batch = batch_data
+        batch_a, batch_p = batch_data
         # aa B, S
         # property item B, S, H
 
-        aa_seq_batch = aa_seq_batch.to(args.device)
-        property_seq_batch, property_cls_token_index = property_converter(property_seq_batch, property_tokenizer, device)
+        batch_a = batch_a.to(args.device)
+        batch_p, cls_index_p = property_converter(batch_p, tokenizer_p, args.device)
 
         pred = model(
-            aa_seq_batch,
-            property_seq_batch,
-            property_cls_token_index=property_cls_token_index,
+            batch_a,
+            batch_p,
+            property_cls_token_index=cls_index_p,
             return_hidden_states=False
             )
 
-        logits_aa = pred["logits_aa"]
-        logits_property = pred["logits_property"]
+        logits_a = pred["logits_aa"]
+        logits_p = pred["logits_property"]
 
-        N = logits_aa.shape[0]
+        N = logits_a.shape[0]
         labels = torch.arange(N).to(args.device)
-        loss_a = F.cross_entropy(logits_aa, labels)
-        loss_p = F.cross_entropy(logits_property, labels)
+        loss_a = F.cross_entropy(logits_a, labels)
+        loss_p = F.cross_entropy(logits_p, labels)
         loss = (loss_a + loss_p) / 2
 
         acc1, acc5 = clip_accuracy(loss_a, loss_p, topk=(1, 5))
-        losses.update(loss.item(), property_seq_batch.size(0))
-        top1.update(acc1[0], property_seq_batch.size(0))
-        top5.update(acc5[0], property_seq_batch.size(0))
+        losses.update(loss.item(), batch_p.size(0))
+        top1.update(acc1[0], batch_p.size(0))
+        top5.update(acc5[0], batch_p.size(0))
 
         optimizer.zero_grad()
         loss.backward()
