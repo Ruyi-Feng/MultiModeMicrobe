@@ -1,1 +1,1 @@
-from .backbone import Microbe
+from .backbone import Microbe, MicrobeCLIP, MicrobeProteinRepr
