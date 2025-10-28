@@ -10,6 +10,7 @@ __pycache__/
 .Python
 build/
 data/
+checkpoints/
 develop-eggs/
 dist/
 downloads/
