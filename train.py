@@ -47,6 +47,12 @@ def load_model(args):
                  }
     property_encoder, property_tokenizer = get_property_encoder(args.property_model_path, args.device)
     if args.collective:
+        backbone = MicrobeCLIP(property_encoder,
+                               trainable=trainable,
+                               collective=args.collective,
+                               cross_hidden_size=args.cross_hidden_size,
+                               aa_representation_dim=args.aa_repr_dim)
+    else:
         aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_repr_dim,
                                         num_layers=args.aa_encoder_num_layers,
                                         num_heads=args.aa_encoder_num_heads,
@@ -54,12 +60,6 @@ def load_model(args):
         backbone = MicrobeCLIP(property_encoder,
                                trainable=trainable,
                                aa_encoder=aa_encoder,
-                               collective=args.collective,
-                               cross_hidden_size=args.cross_hidden_size,
-                               aa_representation_dim=args.aa_repr_dim)
-    else:
-        backbone = MicrobeCLIP(property_encoder,
-                               trainable=trainable,
                                collective=args.collective,
                                cross_hidden_size=args.cross_hidden_size,
                                aa_representation_dim=args.aa_repr_dim)

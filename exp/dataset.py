@@ -13,6 +13,7 @@ class IndividualDataset(Dataset):
     其中property description是一串字符str
     """
     def __init__(self, args, **kwargs):
+        print("init individual dataset")
         self.init_train_index(args)
         self.dataset_length = len(self.train_idx)
         self.data_path = args.data_path
@@ -64,6 +65,7 @@ class IndividualDataset(Dataset):
 
 class CollectiveDataset(Dataset):
     def __init__(self, args, **kwargs):
+        print("init collective dataset")
         self.init_train_index(args.index_path)
         self.dataset_length = len(self.train_idx)
         self.data_path = args.data_path
