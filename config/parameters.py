@@ -1,4 +1,5 @@
 import argparse
+import yaml
 
 
 def data_provider_args():
@@ -14,6 +15,7 @@ def data_provider_args():
 def train_args():
     parser = argparse.ArgumentParser()
     # overall train parameters
+    parser.add_argument('--mark', type=str, default='not_set')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--index_path', type=str, default='./data/collective/index.txt')
     parser.add_argument('--protein_index_path', type=str, default='./data/individual/protein_index.json')
@@ -24,7 +26,7 @@ def train_args():
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--start_epoch', type=int, default=0)
     parser.add_argument('--epoch', type=int, default=20)
-    parser.add_argument('--collective', action='store_true', default=True)
+    parser.add_argument('--collective', action='store_true', default=False)
     parser.add_argument('--print_freq', type=int, default=2)
 
     # data provider parameters
@@ -49,5 +51,11 @@ def train_args():
     # decoder parameters (暂时没有这一部分)
     parser.add_argument('--freeze_llm_decoder', action='store_true', default=False)
 
+    parser.add_argument('--use_yml', type=str, default=None)
+
     args = parser.parse_args()
+
+    if args.use_yml is not None:
+        with open(args.use_yml, 'r') as f:
+            args.__dict__.update(yaml.load(f, Loader=yaml.FullLoader))
     return args

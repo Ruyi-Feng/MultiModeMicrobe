@@ -1,0 +1,36 @@
+mark: individual_base
+
+# overall train parameters
+device: cuda
+index_path: /mnt/data/fengruyi/microbe/individual/index.txt
+protein_index_path: /mnt/data/fengruyi/microbe/individual/protein_index.json
+data_path: /mnt/data/fengruyi/microbe/individual/
+save_path: ./checkpoints/
+batch_size: 32
+learning_rate: 0.001
+weight_decay: 1e-5
+start_epoch: 0
+epoch: 20
+collective: True
+print_freq: 2
+
+# data provider parameters
+model_name: esm2_t33_650M_UR50D
+cut_off: 512
+
+# aa encoder parameters
+freeze_aa_encoder: True
+aa_repr_dim: 480
+aa_encoder_num_heads: 4
+aa_encoder_num_layers: 3
+aa_encoder_dropout: 0.1
+
+# property encoder parameters
+freeze_property_encoder: True
+property_model_path: Qwen/Qwen-1_8B
+
+# backbone parameters
+cross_hidden_size: 64
+
+
+
