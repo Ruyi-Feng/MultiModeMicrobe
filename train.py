@@ -39,6 +39,25 @@ def property_converter(property_seq, property_tokenizer, device="cuda"):
 
     return property_seq, tail_index
 
+def resume(args, model, optimizer):
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            args.start_epoch = checkpoint["epoch"]
+            model.load_state_dict(checkpoint["state_dict"])
+            model = model.to(args.device)
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            print(
+                "=> loaded checkpoint '{}' (epoch {})".format(
+                    args.resume, checkpoint["epoch"]
+                )
+            )
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
+    return model, optimizer
+
 def load_model(args):
     trainable = {
         'aa_encoder': (not args.freeze_aa_encoder),
@@ -158,6 +177,7 @@ def main():
     train_loader = load_train_data(args)
     model, property_tokenizer = load_model(args)
     optimizer, scheduler = init_optimizer(args, model)
+    model, optimizer = resume(args, model, optimizer)
 
     for epoch in range(args.start_epoch, args.epoch):
 

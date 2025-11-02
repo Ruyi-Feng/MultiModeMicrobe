@@ -21,6 +21,7 @@ def train_args():
     parser.add_argument('--protein_index_path', type=str, default='./data/individual/protein_index.json')
     parser.add_argument('--data_path', type=str, default='./data/collective/')
     parser.add_argument('--save_path', type=str, default='./checkpoints/')
+    parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
