@@ -2,19 +2,15 @@
 
 
 def get_optimizer_params(model, weight_decay):
-    """
-    自动划分需要 weight decay / 不需要 weight decay 的参数组。
-    """
+    no_decay = ["bias", "LayerNorm.weight"]
     decay_params = []
     no_decay_params = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
-            continue  # 冻结参数跳过
+            continue
 
-        # 判断逻辑：
-        if len(param.shape) == 1 or name.endswith(".bias"):
-            # 1维参数（比如 LayerNorm.weight 或 bias）
+        if any(nd in name for nd in no_decay):
             no_decay_params.append(param)
         else:
             decay_params.append(param)
@@ -23,7 +19,6 @@ def get_optimizer_params(model, weight_decay):
         {"params": decay_params, "weight_decay": weight_decay},
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
-
 
 def compute_topk_accuracy(logits, target, topk=(1,)):
     """Helper: computes top-k accuracy for one direction."""

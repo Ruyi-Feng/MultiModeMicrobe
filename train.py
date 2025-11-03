@@ -100,6 +100,9 @@ def init_optimizer(args, model):
         lr=args.lr,
         betas=(0.9, 0.98),
         eps=1e-6,
+        weight_decay=0.0,
+        foreach=False,
+        fused=False,
     )
 
     scheduler = CosineAnnealingLR(
