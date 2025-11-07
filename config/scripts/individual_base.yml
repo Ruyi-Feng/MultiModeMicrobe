@@ -7,7 +7,7 @@ protein_index_path: /mnt/data/fengruyi/microbe/individual/protein_index.json
 data_path: /mnt/data/fengruyi/microbe/individual/
 save_path: ./checkpoints/
 batch_size: 32
-learning_rate: 0.0001
+lr: 0.0001
 weight_decay: 0.00001
 start_epoch: 0
 epoch: 20
@@ -31,6 +31,10 @@ property_model_path: /mnt/data/fengruyi/microbe/models/Qwen1_8B
 
 # backbone parameters
 cross_hidden_size: 64
+
+# training stability parameters
+max_grad_norm: 1.0
+warmup_epochs: 2
 
 
 

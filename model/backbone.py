@@ -42,8 +42,8 @@ class MicrobeCLIP(nn.Module):
         if not self.collective:
             if aa_encoder is None:
                 raise ValueError("aa_encoder must be provided when collective is False")
-            # 用于贴在前面提取表征的向量
-            self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim))
+            # 用于贴在前面提取表征的向量，使用更小的初始化范围
+            self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim) * 0.02)
             grad_adjustment(aa_encoder, trainable['aa_encoder'])
             self.aa_encoder = aa_encoder
 
@@ -178,23 +178,32 @@ class CrossAttentionFusion(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout):
         super().__init__()
         self.cross_attn = CrossAttention(embed_dim, num_heads, dropout)
-        self.norm = nn.LayerNorm(embed_dim)
+        self.attn_norm = nn.LayerNorm(embed_dim)
+        self.ffn_norm = nn.LayerNorm(embed_dim)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 4),
             nn.GELU(),
-            nn.Linear(embed_dim * 4, embed_dim)
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout)
         )
 
     def forward(self, text_emb, aa_emb):
         # text_emb: (B, L_t, D)
-        # image_emb: (B, L_v, D)
+        # aa_emb: (B, L_v, D)
+        # 使用 Pre-norm 架构，更稳定
+        text_norm = self.attn_norm(text_emb)
         attn_out, _ = self.cross_attn(
-            query=text_emb,    # Query
+            query=text_norm,    # Query
             key=aa_emb,     # Key
             value=aa_emb    # Value
         )
-        out = self.norm(text_emb + attn_out)
-        out = self.norm(out + self.ffn(out))
+        out = text_emb + attn_out  # 残差连接
+        
+        # FFN with pre-norm
+        out_norm = self.ffn_norm(out)
+        ffn_out = self.ffn(out_norm)
+        out = out + ffn_out  # 残差连接
         return out  # 对齐后的文本表示
 
 
@@ -229,23 +238,39 @@ class MicrobeProteinRepr(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_layers = num_layers
-        self.self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout, batch_first=True)
-        self.norm = nn.LayerNorm(embed_dim)
-        self.ffn = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 4),
-            nn.GELU(),
-            nn.Linear(embed_dim * 4, embed_dim)
-        )
+        # 为每一层创建独立的 LayerNorm，避免共享导致的问题
+        self.attn_norms = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(num_layers)])
+        self.ffn_norms = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(num_layers)])
+        self.self_attns = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim, num_heads, dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
+        self.ffns = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(embed_dim, embed_dim * 4),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(embed_dim * 4, embed_dim),
+                nn.Dropout(dropout)
+            )
+            for _ in range(num_layers)
+        ])
 
     def forward(self, x):
         for i in range(self.num_layers):
-            attn_out, _ = self.self_attn(
-                query=x,
-                key=x,
-                value=x
+            # Pre-norm architecture (更稳定)
+            x_norm = self.attn_norms[i](x)
+            attn_out, _ = self.self_attns[i](
+                query=x_norm,
+                key=x_norm,
+                value=x_norm
             )
-            x = self.norm(x + attn_out)
-            x = self.norm(x + self.ffn(x))
+            x = x + attn_out  # 残差连接
+
+            # FFN with pre-norm
+            x_norm = self.ffn_norms[i](x)
+            ffn_out = self.ffns[i](x_norm)
+            x = x + ffn_out  # 残差连接
         repr = x[:, 0, :]
         return repr
 
