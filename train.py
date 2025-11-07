@@ -4,8 +4,9 @@ import time
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 from exp.dataset import IndividualDataset, CollectiveDataset
 from model import MicrobeCLIP, MicrobeProteinRepr
 from model.property_encoder import get_property_encoder
@@ -105,9 +106,18 @@ def init_optimizer(args, model):
         fused=False,
     )
 
-    scheduler = CosineAnnealingLR(
-        optimizer, T_max=args.epoch, eta_min=args.lr * 0.01
-        )
+    # 添加 warmup 的 scheduler
+    warmup_epochs = getattr(args, 'warmup_epochs', 2)
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            # Warmup: 线性增长
+            return (epoch + 1) / warmup_epochs
+        else:
+            # Cosine annealing
+            progress = (epoch - warmup_epochs) / (args.epoch - warmup_epochs)
+            return 0.01 + 0.99 * (1 + np.cos(np.pi * progress)) / 2
+    
+    scheduler = LambdaLR(optimizer, lr_lambda)
     return optimizer, scheduler
 
 def train(args, model, tokenizer_p, loader, optimizer, epoch):
@@ -165,6 +175,9 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch):
 
         optimizer.zero_grad()
         loss.backward()
+        # 添加梯度裁剪，防止梯度爆炸
+        max_grad_norm = getattr(args, 'max_grad_norm', 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
 
         # measure elapsed time

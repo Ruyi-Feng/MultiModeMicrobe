@@ -49,6 +49,10 @@ def train_args():
     # backbone parameters
     parser.add_argument('--cross_hidden_size', type=int, default=64)
 
+    # training stability parameters
+    parser.add_argument('--max_grad_norm', type=float, default=1.0, help='Gradient clipping norm')
+    parser.add_argument('--warmup_epochs', type=int, default=2, help='Number of warmup epochs for learning rate')
+
     # decoder parameters (暂时没有这一部分)
     parser.add_argument('--freeze_llm_decoder', action='store_true', default=False)
 
