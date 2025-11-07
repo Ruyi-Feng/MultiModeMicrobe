@@ -1,7 +1,7 @@
 
 def get_included_property():
     keys = {
-        "Domain"
+        "Domain",
         "Phylum",
         "Class",
         "Order",
@@ -9,10 +9,7 @@ def get_included_property():
         "Genus",
         "Species",
         "Strain",
-        "Strain history",
-        "Strain designations",
-        "Other Species Names",
-        "Type Strain",
+
         "Tmin",
         "Tmax",
         "Tgrowth",
@@ -31,9 +28,6 @@ def get_included_property():
         "nacloptMin(mol/L)",
         "nacloptMax(mol/L)",
         "naclopt.",
-        "Rate(h-1)",
-        "DoubleTime(h)",
-        "Optimal Rate(h-1)",
-        "Optimal DoubleTime(h)",
+        "Oxygen Tolerance",
     }
     return keys
