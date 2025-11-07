@@ -41,8 +41,8 @@ class IndividualDataset(Dataset):
                     aa_representation = aa_loader(item).unsqueeze(0)
                 else:
                     aa_representation = torch.concat((aa_representation, aa_loader(item).unsqueeze(0)), axis=0)
-        #         if len(aa_representation) >= self.max_seq_len:
-        #             return aa_representation
+                if len(aa_representation) >= self.max_seq_len:
+                    return aa_representation
         # if len(aa_representation) < self.max_seq_len:
         #     shape = aa_representation[0].shape
         #     aa_representation = aa_representation + np.zeros(shape).tolist() * (self.max_seq_len - len(aa_representation))

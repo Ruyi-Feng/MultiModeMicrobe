@@ -39,8 +39,8 @@ def test_aa_provider():
 
 
 def test_data_provider():
-    data_dir = f"C:\\Users\\User\\WorkSpace\\data\\Zhiling\\aaseq_microbe\\examples"
-    save_path = f"C:\\Users\\User\\WorkSpace\\data\\Zhiling\\aaseq_microbe\\individual"
+    data_dir = f"/mnt/data/fengruyi/microbe/examples/"
+    save_path = f"/mnt/data/fengruyi/microbe/collective/"
     DataProvider(data_dir, save_path)
 
 
