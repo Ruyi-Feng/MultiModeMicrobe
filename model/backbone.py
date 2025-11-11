@@ -1,6 +1,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 
@@ -42,18 +43,19 @@ class MicrobeCLIP(nn.Module):
         if not self.collective:
             if aa_encoder is None:
                 raise ValueError("aa_encoder must be provided when collective is False")
-            # 用于贴在前面提取表征的向量，使用更小的初始化范围
-            self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim) * 0.02)
-            grad_adjustment(aa_encoder, trainable['aa_encoder'])
+
+            if aa_encoder.name == "cross_attention_fusion":
+                self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+                # 用于贴在前面提取表征的向量，使用更小的初始化范围
+                self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim) * 0.02)
+            if aa_encoder.name == "gumbal_softmax":
+                self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
             self.aa_encoder = aa_encoder
+            grad_adjustment(aa_encoder, trainable['aa_encoder'])
 
         if self.collective:
             self._aa_proj = nn.Linear(aa_representation_dim, cross_hidden_size, bias=False)
-        else:
-            if aa_encoder is not None:
-                self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
-            else:
-                raise ValueError("aa_encoder must be provided when collective is True")
+
 
     def _forward_property(self, property_seq, property_cls_token_index=None):
         property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
@@ -74,9 +76,10 @@ class MicrobeCLIP(nn.Module):
             aa_embedding = self._aa_proj(aa_rep)  # B, H
             return aa_embedding
         else:
-            # 这里aa_encoder用一个attention
-            cls_token = self.protein_cls_token.expand(aa_rep.size(0), -1, -1)
-            aa_rep = torch.concat([cls_token, aa_rep], dim=1)
+            # 如果是cross_attention_fusion，需要加上cls token 再做attention
+            if self.aa_encoder.name == "cross_attention_fusion":
+                cls_token = self.protein_cls_token.expand(aa_rep.size(0), -1, -1)
+                aa_rep = torch.concat([cls_token, aa_rep], dim=1)
             aa_embedding = self.aa_encoder(aa_rep)
             aa_embedding = self._aa_proj(aa_embedding)
             return aa_embedding
@@ -177,6 +180,7 @@ class Microbe(nn.Module):
 class CrossAttentionFusion(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout):
         super().__init__()
+        self.name = "cross_attention_fusion"
         self.cross_attn = CrossAttention(embed_dim, num_heads, dropout)
         self.attn_norm = nn.LayerNorm(embed_dim)
         self.ffn_norm = nn.LayerNorm(embed_dim)
@@ -232,6 +236,29 @@ class CrossAttention(nn.Module):
         )
         return attn_output, attn_weights
 
+class GumbalSoftmax(nn.Module):
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.name = "gumbal_softmax"
+        self.temperature = torch.nn.Parameter(torch.ones(1) * 0.7)
+        self.embed_dim = embed_dim
+        # 将每个位置的特征转换为标量logit，用于生成序列级别的权重
+        self.logit_proj = nn.Linear(embed_dim, 1)
+
+    def forward(self, aa_repr):
+        """
+        Args:
+            aa_repr: (B, S, D)
+        Returns:
+            x: (B, D)
+        """
+        # 为每个序列位置生成logit: (B, S, 1)
+        logits = self.logit_proj(aa_repr).squeeze(-1)  # (B, S)
+        # 使用Gumbel Softmax在序列维度上生成权重: (B, S)
+        weights = F.gumbel_softmax(logits, tau=self.temperature, hard=False, dim=1)
+        # 使用权重对序列特征进行加权求和: (B, D)
+        x = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)  # (B, D)
+        return x
 
 class MicrobeProteinRepr(nn.Module):
     def __init__(self, embed_dim, num_layers, num_heads, dropout):

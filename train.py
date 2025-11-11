@@ -8,7 +8,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 from exp.dataset import IndividualDataset, CollectiveDataset
-from model import MicrobeCLIP, MicrobeProteinRepr
+from model import MicrobeCLIP, MicrobeProteinRepr, GumbalSoftmax
 from model.property_encoder import get_property_encoder
 from utils.tools import get_optimizer_params, compute_topk_accuracy
 from config import train_args
@@ -73,10 +73,15 @@ def load_model(args):
                                cross_hidden_size=args.cross_hidden_size,
                                aa_representation_dim=args.aa_repr_dim)
     else:
-        aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_repr_dim,
+        if args.aa_encoder_type == "cross_attention_fusion":
+            aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_repr_dim,
                                         num_layers=args.aa_encoder_num_layers,
                                         num_heads=args.aa_encoder_num_heads,
                                         dropout=args.aa_encoder_dropout,)
+        elif args.aa_encoder_type == "gumbal_softmax":
+            aa_encoder = GumbalSoftmax(embed_dim=args.aa_repr_dim)
+        else:
+            raise ValueError(f"Invalid aa_encoder_type: {args.aa_encoder_type}")
         backbone = MicrobeCLIP(property_encoder,
                                trainable=trainable,
                                aa_encoder=aa_encoder,
@@ -116,7 +121,7 @@ def init_optimizer(args, model):
             # Cosine annealing
             progress = (epoch - warmup_epochs) / (args.epoch - warmup_epochs)
             return 0.01 + 0.99 * (1 + np.cos(np.pi * progress)) / 2
-    
+
     scheduler = LambdaLR(optimizer, lr_lambda)
     return optimizer, scheduler
 
