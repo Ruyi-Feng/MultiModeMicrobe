@@ -41,6 +41,7 @@ def train_args():
     parser.add_argument('--aa_encoder_num_heads', type=int, default=4)
     parser.add_argument('--aa_encoder_num_layers', type=int, default=3)
     parser.add_argument('--aa_encoder_dropout', type=float, default=0.1)
+    parser.add_argument('--aa_encoder_type', type=str, default="cross_attention_fusion")
 
     # property encoder parameters
     parser.add_argument('--freeze_property_encoder', action='store_true', default=False)
