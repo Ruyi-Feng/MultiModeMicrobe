@@ -1,4 +1,4 @@
-mark: individual_base
+mark: individual_gumbal
 
 # overall train parameters
 device: cuda
