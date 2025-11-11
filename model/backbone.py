@@ -241,6 +241,7 @@ class GumbalSoftmax(nn.Module):
         super().__init__()
         self.name = "gumbal_softmax"
         self.temperature = torch.nn.Parameter(torch.ones(1) * 0.7)
+        self.embed_dim = embed_dim
         # 将每个位置的特征转换为标量logit，用于生成序列级别的权重
         self.logit_proj = nn.Linear(embed_dim, 1)
 
