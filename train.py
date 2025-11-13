@@ -14,15 +14,54 @@ from utils.tools import get_optimizer_params, compute_topk_accuracy
 from config import train_args
 
 
+def collate_fn_individual(batch):
+    """
+    自定义collate函数，处理individual模式下的变长序列
+    """
+    descriptions, aa_reprs = zip(*batch)
+    
+    # 找到最大序列长度
+    max_seq_len = max(aa_repr.shape[0] for aa_repr in aa_reprs if aa_repr is not None)
+    
+    # 对每个aa_repr进行padding或truncation
+    padded_aa_reprs = []
+    for aa_repr in aa_reprs:
+        if aa_repr is None:
+            # 如果为None，创建一个零张量
+            if len(padded_aa_reprs) > 0:
+                dim = padded_aa_reprs[0].shape[1]
+                aa_repr = torch.zeros(max_seq_len, dim, dtype=torch.float32)
+            else:
+                raise ValueError("Cannot determine feature dimension from None tensor")
+        else:
+            seq_len, dim = aa_repr.shape
+            if seq_len > max_seq_len:
+                # 截断
+                aa_repr = aa_repr[:max_seq_len]
+            elif seq_len < max_seq_len:
+                # Padding
+                padding = torch.zeros(max_seq_len - seq_len, dim, dtype=aa_repr.dtype)
+                aa_repr = torch.cat([aa_repr, padding], dim=0)
+        padded_aa_reprs.append(aa_repr)
+    
+    # 堆叠成batch
+    batch_aa = torch.stack(padded_aa_reprs, dim=0)
+    batch_descriptions = list(descriptions)
+    
+    return batch_descriptions, batch_aa
+
 def load_train_data(args):
     if args.collective:
         train_data = CollectiveDataset(args)
+        collate_fn = None  # 使用默认collate_fn
     else:
         train_data = IndividualDataset(args)
+        collate_fn = collate_fn_individual  # 使用自定义collate_fn处理变长序列
 
     train_loader = DataLoader(train_data,
                               batch_size=args.batch_size,
-                              shuffle=True)
+                              shuffle=True,
+                              collate_fn=collate_fn)
     return train_loader
 
 def property_converter(property_seq, property_tokenizer, device="cuda"):
@@ -118,11 +157,13 @@ def init_optimizer(args, model):
             # Warmup: 线性增长
             return (epoch + 1) / warmup_epochs
         else:
-            # Cosine annealing
-            progress = (epoch - warmup_epochs) / (args.epoch - warmup_epochs)
+            # Cosine annealing: 从1.0衰减到0.01
+            progress = (epoch - warmup_epochs) / max(args.epoch - warmup_epochs, 1)
             return 0.01 + 0.99 * (1 + np.cos(np.pi * progress)) / 2
 
     scheduler = LambdaLR(optimizer, lr_lambda)
+    print(f"Learning rate schedule: warmup={warmup_epochs} epochs, "
+          f"initial_lr={args.lr}, total_epochs={args.epoch}")
     return optimizer, scheduler
 
 def train(args, model, tokenizer_p, loader, optimizer, epoch):
@@ -182,15 +223,28 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch):
         loss.backward()
         # 添加梯度裁剪，防止梯度爆炸
         max_grad_norm = getattr(args, 'max_grad_norm', 1.0)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
+        # 添加调试信息：每print_freq个batch打印一次详细统计
         if i % args.print_freq == 0:
             progress.display(i)
+            # 打印额外的调试信息
+            with torch.no_grad():
+                logit_scale_val = model.logit_scale.exp().item()
+                logits_a_mean = logits_a.mean().item()
+                logits_a_std = logits_a.std().item()
+                logits_p_mean = logits_p.mean().item()
+                logits_p_std = logits_p.std().item()
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"  Debug: logit_scale={logit_scale_val:.4f}, "
+                      f"logits_aa=[mean={logits_a_mean:.4f}, std={logits_a_std:.4f}], "
+                      f"logits_prop=[mean={logits_p_mean:.4f}, std={logits_p_std:.4f}], "
+                      f"grad_norm={grad_norm:.4f}, lr={current_lr:.2e}")
 
 
 def main():

@@ -32,12 +32,16 @@ class MicrobeCLIP(nn.Module):
             nn.Sigmoid()
         )
 
+        # logit_scale初始化为CLIP标准值，并添加约束防止过大
+        # 使用clamp确保温度参数在合理范围内 [log(1/100), log(100)]
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def _init_property_net(self, property_encoder, trainable, cross_hidden_size):
         grad_adjustment(property_encoder, trainable['property_encoder'])
         self.property_encoder = property_encoder
         self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
+        # 使用Xavier初始化投影层，有助于训练稳定性
+        nn.init.xavier_uniform_(self._property_proj.weight, gain=1.0)
 
     def _init_aa_net(self, aa_encoder, trainable, aa_representation_dim, cross_hidden_size):
         if not self.collective:
@@ -46,15 +50,21 @@ class MicrobeCLIP(nn.Module):
 
             if aa_encoder.name == "cross_attention_fusion":
                 self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+                # 使用Xavier初始化投影层
+                nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
                 # 用于贴在前面提取表征的向量，使用更小的初始化范围
                 self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim) * 0.02)
             if aa_encoder.name == "gumbal_softmax":
                 self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+                # 使用Xavier初始化投影层
+                nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
             self.aa_encoder = aa_encoder
             grad_adjustment(aa_encoder, trainable['aa_encoder'])
 
         if self.collective:
             self._aa_proj = nn.Linear(aa_representation_dim, cross_hidden_size, bias=False)
+            # 使用Xavier初始化投影层
+            nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
 
 
     def _forward_property(self, property_seq, property_cls_token_index=None):
@@ -92,7 +102,8 @@ class MicrobeCLIP(nn.Module):
         aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
         property_cls_token = property_cls_token / property_cls_token.norm(dim=1, keepdim=True)
 
-        logit_scale = self.logit_scale.exp()
+        # 约束logit_scale在合理范围内，防止数值不稳定
+        logit_scale = torch.clamp(self.logit_scale, -np.log(100), np.log(100)).exp()
         logits_aa = logit_scale * aa_embedding @ property_cls_token.t()
         logits_property = logits_aa.t()
 
