@@ -134,13 +134,13 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch):
     """
     print("starting training")
     batch_time = AverageMeter("Time", ":6.3f")
-    data_time = AverageMeter("Data", ":6.3f")
+    # data_time = AverageMeter("Data", ":6.3f")
     losses = AverageMeter("Loss", ":.4e")
     top1 = AverageMeter("Acc@1", ":6.2f")
     top5 = AverageMeter("Acc@5", ":6.2f")
     progress = ProgressMeter(
         len(loader),
-        [batch_time, data_time, losses, top1, top5],
+        [batch_time, losses, top1, top5],
         prefix="Epoch: [{}]".format(epoch),
     )
 

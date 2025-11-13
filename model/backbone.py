@@ -252,6 +252,8 @@ class GumbalSoftmax(nn.Module):
         Returns:
             x: (B, D)
         """
+        # aa_repr = F.gumbel_softmax(aa_repr, tau=self.temperature, hard=True, dim=2)
+        # x = aa_repr.sum(dim=1)
         # 为每个序列位置生成logit: (B, S, 1)
         logits = self.logit_proj(aa_repr).squeeze(-1)  # (B, S)
         # 使用Gumbel Softmax在序列维度上生成权重: (B, S)
