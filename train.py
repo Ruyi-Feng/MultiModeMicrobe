@@ -152,7 +152,7 @@ def load_model(args):
                                cross_hidden_size=args.cross_hidden_size,
                                aa_representation_dim=args.aa_repr_dim)
     else:
-        if args.aa_encoder_type == "cross_attention_fusion":
+        if args.aa_encoder_type == "microbe_protein_repr":
             aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_repr_dim,
                                         num_layers=args.aa_encoder_num_layers,
                                         num_heads=args.aa_encoder_num_heads,
