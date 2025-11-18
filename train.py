@@ -1,6 +1,8 @@
 import os
 import shutil
 import time
+import logging
+from datetime import datetime
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +15,44 @@ from model.property_encoder import get_property_encoder
 from utils.tools import get_optimizer_params, compute_topk_accuracy
 from config import train_args
 
+
+def setup_logger(args):
+    """
+    设置日志记录器，同时输出到控制台和文件
+    """
+    # 确保日志目录存在
+    os.makedirs(args.save_path, exist_ok=True)
+
+    # 创建日志文件名，包含 mark 和时间戳
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"train_{args.mark}_{timestamp}.log"
+    log_filepath = os.path.join(args.save_path, log_filename)
+
+    # 配置日志格式
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+
+    # 创建 logger
+    logger = logging.getLogger('train')
+    logger.setLevel(logging.INFO)
+
+    # 清除已有的处理器，避免重复添加
+    logger.handlers.clear()
+
+    # 文件处理器
+    file_handler = logging.FileHandler(log_filepath, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    logger.addHandler(file_handler)
+
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    logger.addHandler(console_handler)
+
+    logger.info(f"Logging initialized. Log file: {log_filepath}")
+    return logger
 
 def collate_fn_individual(batch):
     """
@@ -79,23 +119,23 @@ def property_converter(property_seq, property_tokenizer, device="cuda"):
 
     return property_seq, tail_index
 
-def resume(args, model, optimizer):
+def resume(args, model, optimizer, logger):
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
+            logger.info("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint["epoch"]
             model.load_state_dict(checkpoint["state_dict"])
             model = model.to(args.device)
             optimizer.load_state_dict(checkpoint["optimizer"])
-            print(
+            logger.info(
                 "=> loaded checkpoint '{}' (epoch {})".format(
                     args.resume, checkpoint["epoch"]
                 )
             )
         else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+            logger.warning("=> no checkpoint found at '{}'".format(args.resume))
     return model, optimizer
 
 def load_model(args):
@@ -164,18 +204,16 @@ def init_optimizer(args, model):
             return 0.01 + 0.99 * (1 + np.cos(np.pi * progress)) / 2
 
     scheduler = LambdaLR(optimizer, lr_lambda)
-    print(f"Learning rate schedule: warmup={warmup_epochs} epochs, "
-          f"initial_lr={args.lr}, total_epochs={args.epoch}")
     return optimizer, scheduler
 
-def train(args, model, tokenizer_p, loader, optimizer, epoch):
+def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
     """
     这里接收的都是定义好的model, device, loader, optimizer
     其中loader是对比学习的loader,已经直接加载了对比学习的mini batch的
     每个loader传递的数据都已经加过了cls token, cls token的位置包含在data_config里
     经过了tokenizer
     """
-    print("starting training")
+    logger.info("starting training")
     batch_time = AverageMeter("Time", ":6.3f")
     # data_time = AverageMeter("Data", ":6.3f")
     losses = AverageMeter("Loss", ":.4e")
@@ -234,32 +272,60 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch):
 
         # 添加调试信息：每print_freq个batch打印一次详细统计
         if i % args.print_freq == 0:
-            progress.display(i)
+            progress.display(i, logger)
             # 打印额外的调试信息
-            with torch.no_grad():
-                logit_scale_val = model.logit_scale.exp().item()
-                logits_a_mean = logits_a.mean().item()
-                logits_a_std = logits_a.std().item()
-                logits_p_mean = logits_p.mean().item()
-                logits_p_std = logits_p.std().item()
-                current_lr = optimizer.param_groups[0]['lr']
-                print(f"  Debug: logit_scale={logit_scale_val:.4f}, "
-                      f"logits_aa=[mean={logits_a_mean:.4f}, std={logits_a_std:.4f}], "
-                      f"logits_prop=[mean={logits_p_mean:.4f}, std={logits_p_std:.4f}], "
-                      f"grad_norm={grad_norm:.4f}, lr={current_lr:.2e}")
+            # with torch.no_grad():
+            #     logit_scale_val = model.logit_scale.exp().item()
+            #     logits_a_mean = logits_a.mean().item()
+            #     logits_a_std = logits_a.std().item()
+            #     logits_p_mean = logits_p.mean().item()
+            #     logits_p_std = logits_p.std().item()
+            #     current_lr = optimizer.param_groups[0]['lr']
+                # logger.info(f"  Debug: logit_scale={logit_scale_val:.4f}, "
+                #       f"logits_aa=[mean={logits_a_mean:.4f}, std={logits_a_std:.4f}], "
+                #       f"logits_prop=[mean={logits_p_mean:.4f}, std={logits_p_std:.4f}], "
+                #       f"grad_norm={grad_norm:.4f}, lr={current_lr:.2e}")
 
 
 def main():
     args = train_args()
+
+    # 设置日志记录器
+    logger = setup_logger(args)
+
+    # 记录训练配置信息
+    logger.info("=" * 80)
+    logger.info("Training Configuration:")
+    logger.info(f"  Mark: {args.mark}")
+    logger.info(f"  Device: {args.device}")
+    logger.info(f"  Batch size: {args.batch_size}")
+    logger.info(f"  Learning rate: {args.lr}")
+    logger.info(f"  Weight decay: {args.weight_decay}")
+    logger.info(f"  Start epoch: {args.start_epoch}")
+    logger.info(f"  Total epochs: {args.epoch}")
+    logger.info(f"  Collective mode: {args.collective}")
+    logger.info(f"  AA encoder type: {args.aa_encoder_type}")
+    logger.info(f"  Save path: {args.save_path}")
+    logger.info("=" * 80)
+
     train_loader = load_train_data(args)
     model, property_tokenizer = load_model(args)
     optimizer, scheduler = init_optimizer(args, model)
-    model, optimizer = resume(args, model, optimizer)
+
+    # 记录学习率调度信息
+    warmup_epochs = getattr(args, 'warmup_epochs', 2)
+    logger.info(f"Learning rate schedule: warmup={warmup_epochs} epochs, "
+          f"initial_lr={args.lr}, total_epochs={args.epoch}")
+
+    model, optimizer = resume(args, model, optimizer, logger)
 
     for epoch in range(args.start_epoch, args.epoch):
+        logger.info(f"\n{'='*80}")
+        logger.info(f"Epoch {epoch+1}/{args.epoch}")
+        logger.info(f"{'='*80}")
 
         scheduler.step()
-        train(args, model, property_tokenizer, train_loader, optimizer, epoch)
+        train(args, model, property_tokenizer, train_loader, optimizer, epoch, logger)
 
         save_name = os.path.join(args.save_path, "checkpoint.pth.tar")
         save_checkpoint(
@@ -271,6 +337,9 @@ def main():
             is_best=False,
             filename=save_name,
         )
+        logger.info(f"Checkpoint saved to {save_name}")
+
+    logger.info("Training completed!")
 
 def save_checkpoint(state, is_best, filename: str = "checkpoint.pth.tar") -> None:
     torch.save(state, filename)
@@ -326,10 +395,10 @@ class ProgressMeter:
         self.meters = meters
         self.prefix = prefix
 
-    def display(self, batch) -> None:
+    def display(self, batch, logger) -> None:
         entries = [self.prefix + self.batch_fmtstr.format(batch)]
         entries += [str(meter) for meter in self.meters]
-        print("\t".join(entries))
+        logger.info("\t".join(entries))
 
     def _get_batch_fmtstr(self, num_batches):
         num_digits = len(str(num_batches // 1))
