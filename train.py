@@ -8,7 +8,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 from exp.dataset import IndividualDataset, CollectiveDataset
-from model import MicrobeCLIP, MicrobeProteinRepr, GumbalSoftmax
+from model import MicrobeCLIP, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
 from model.property_encoder import get_property_encoder
 from utils.tools import get_optimizer_params, compute_topk_accuracy
 from config import train_args
@@ -19,10 +19,10 @@ def collate_fn_individual(batch):
     自定义collate函数，处理individual模式下的变长序列
     """
     descriptions, aa_reprs = zip(*batch)
-    
+
     # 找到最大序列长度
     max_seq_len = max(aa_repr.shape[0] for aa_repr in aa_reprs if aa_repr is not None)
-    
+
     # 对每个aa_repr进行padding或truncation
     padded_aa_reprs = []
     for aa_repr in aa_reprs:
@@ -43,11 +43,11 @@ def collate_fn_individual(batch):
                 padding = torch.zeros(max_seq_len - seq_len, dim, dtype=aa_repr.dtype)
                 aa_repr = torch.cat([aa_repr, padding], dim=0)
         padded_aa_reprs.append(aa_repr)
-    
+
     # 堆叠成batch
     batch_aa = torch.stack(padded_aa_reprs, dim=0)
     batch_descriptions = list(descriptions)
-    
+
     return batch_descriptions, batch_aa
 
 def load_train_data(args):
@@ -118,7 +118,9 @@ def load_model(args):
                                         num_heads=args.aa_encoder_num_heads,
                                         dropout=args.aa_encoder_dropout,)
         elif args.aa_encoder_type == "gumbal_softmax":
-            aa_encoder = GumbalSoftmax(embed_dim=args.aa_repr_dim)
+            aa_encoder = GumbalSoftmax(embed_dim=args.aa_repr_dim, hidden_dim=args.aa_encoder_hidden_dim)
+        elif args.aa_encoder_type == "attention_convergence":
+            aa_encoder = AttentionConvergence(embed_dim=args.aa_repr_dim)
         else:
             raise ValueError(f"Invalid aa_encoder_type: {args.aa_encoder_type}")
         backbone = MicrobeCLIP(property_encoder,

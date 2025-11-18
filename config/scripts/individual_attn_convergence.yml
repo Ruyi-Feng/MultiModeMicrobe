@@ -1,0 +1,38 @@
+mark: individual_gumbal
+
+# overall train parameters
+device: cuda
+index_path: C://Users//User//WorkSpace//code//MultiModeMicrobe//data//individual//index.txt
+protein_index_path: C://Users//User//WorkSpace//code//MultiModeMicrobe//data//individual//protein_index.json
+data_path: C://Users//User//WorkSpace//code//MultiModeMicrobe//data//individual//
+save_path: ./checkpoints/
+batch_size: 6
+lr: 0.0001
+weight_decay: 0.00001
+start_epoch: 0
+epoch: 20
+print_freq: 2
+
+# data provider parameters
+model_name: esm2_t33_650M_UR50D
+cut_off: 512
+max_seq_len: 512
+
+# aa encoder parameters
+aa_encoder_type: attention_convergence
+aa_repr_dim: 480
+aa_encoder_hidden_dim: 128
+
+# property encoder parameters
+freeze_property_encoder: True
+property_model_path: Qwen/Qwen-1_8B
+
+# backbone parameters
+cross_hidden_size: 256
+
+# training stability parameters
+max_grad_norm: 1.0
+warmup_epochs: 2
+
+
+

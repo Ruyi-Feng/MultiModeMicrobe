@@ -38,6 +38,7 @@ def train_args():
     # aa encoder parameters
     parser.add_argument('--freeze_aa_encoder', action='store_true', default=False)
     parser.add_argument('--aa_repr_dim', type=int, default=480)
+    parser.add_argument('--aa_encoder_hidden_dim', type=int, default=None)
     parser.add_argument('--aa_encoder_num_heads', type=int, default=4)
     parser.add_argument('--aa_encoder_num_layers', type=int, default=3)
     parser.add_argument('--aa_encoder_dropout', type=float, default=0.1)

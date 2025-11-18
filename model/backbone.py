@@ -54,7 +54,7 @@ class MicrobeCLIP(nn.Module):
                 nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
                 # 用于贴在前面提取表征的向量，使用更小的初始化范围
                 self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim) * 0.02)
-            if aa_encoder.name == "gumbal_softmax":
+            if aa_encoder.name in ["gumbal_softmax", "attention_convergence"]:
                 self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
                 # 使用Xavier初始化投影层
                 nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
@@ -272,6 +272,24 @@ class GumbalSoftmax(nn.Module):
         # 使用权重对序列特征进行加权求和: (B, D)
         x = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)  # (B, D)
         return x
+
+class AttentionConvergence(nn.Module):
+    def __init__(self, embed_dim, hidden_dim=None, *args, **kwargs):
+        super().__init__()
+        self.name = "attention_convergence"
+        if hidden_dim is None:
+            hidden_dim = embed_dim
+        self.linear = nn.Linear(embed_dim, hidden_dim)
+        # 使用较小的初始化值，与代码库中其他参数初始化保持一致
+        self.v = nn.Parameter(torch.randn(hidden_dim) * 0.02, requires_grad=True)
+
+    def forward(self, aa_repr):
+        x = self.linear(aa_repr)
+        e = torch.matmul(F.tanh(x), self.v)  # (B, S, hidden_dim) @ (hidden_dim,) -> (B, S)
+        weights = F.softmax(e, dim=1)  # (B, S)
+        x = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)  # (B, S, embed_dim) -> (B, embed_dim)
+        return x
+
 
 class MicrobeProteinRepr(nn.Module):
     def __init__(self, embed_dim, num_layers, num_heads, dropout):
