@@ -79,7 +79,7 @@ class MicrobeCLIP(nn.Module):
         property_embedding = property_embedding[:, 1:, :]
         return property_embedding, property_cls_token
 
-    def _forward_aa(self, aa_rep):
+    def _forward_aa(self, aa_rep, padding_mask=None):
         if self.collective:
             if aa_rep.ndim != 2:
                 raise ValueError("aa_rep must be 2D (batch, dim) when collective is True, please use collective features")
@@ -90,13 +90,20 @@ class MicrobeCLIP(nn.Module):
             if self.aa_encoder.name == "microbe_protein_repr":
                 cls_token = self.protein_cls_token.expand(aa_rep.size(0), -1, -1)
                 aa_rep = torch.concat([cls_token, aa_rep], dim=1)
-            aa_embedding = self.aa_encoder(aa_rep)
+                # 更新 padding_mask 以包含 cls_token
+                if padding_mask is not None:
+                    cls_mask = torch.ones(aa_rep.size(0), 1, dtype=padding_mask.dtype, device=padding_mask.device)
+                    padding_mask = torch.cat([cls_mask, padding_mask], dim=1)
+            if self.aa_encoder.name == "attention_convergence" and padding_mask is not None:
+                aa_embedding = self.aa_encoder(aa_rep, padding_mask=padding_mask)
+            else:
+                aa_embedding = self.aa_encoder(aa_rep)
             aa_embedding = self._aa_proj(aa_embedding)
             return aa_embedding
 
-    def forward(self, aa_seq, property_seq, property_cls_token_index=None, return_hidden_states=False):
+    def forward(self, aa_seq, property_seq, property_cls_token_index=None, return_hidden_states=False, padding_mask=None):
 
-        aa_embedding = self._forward_aa(aa_seq)
+        aa_embedding = self._forward_aa(aa_seq, padding_mask=padding_mask)
         _, property_cls_token = self._forward_property(property_seq, property_cls_token_index)
 
         aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
@@ -161,10 +168,26 @@ class AttentionConvergence(nn.Module):
         # 使用较小的初始化值，与代码库中其他参数初始化保持一致
         self.v = nn.Parameter(torch.randn(hidden_dim) * 0.02, requires_grad=True)
 
-    def forward(self, aa_repr):
+    def forward(self, aa_repr, padding_mask=None):
+        """
+        Args:
+            aa_repr: (B, S, embed_dim) 输入序列表示
+            padding_mask: (B, S) 可选，True 表示有效位置，False 表示 padding
+        Returns:
+            x: (B, embed_dim) 聚合后的序列表示
+        """
         x = self.linear(aa_repr)
         e = torch.matmul(F.tanh(x), self.v)  # (B, S, hidden_dim) @ (hidden_dim,) -> (B, S)
+
+        all_padding = None
+        if padding_mask is not None:
+            e = e.masked_fill(~padding_mask, float('-inf'))
+            valid_lengths = padding_mask.sum(dim=1)  # (B,)
+            all_padding = valid_lengths == 0
         weights = F.softmax(e, dim=1)  # (B, S)
+        if padding_mask is not None and all_padding is not None and all_padding.any():
+            uniform_weights = torch.ones_like(weights) / weights.size(1)
+            weights = torch.where(all_padding.unsqueeze(1), uniform_weights, weights)
         x = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)  # (B, S, embed_dim) -> (B, embed_dim)
         return x
 

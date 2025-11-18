@@ -1,1 +1,1 @@
-from .backbone import Microbe, MicrobeCLIP, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
+from .backbone import MicrobeCLIP, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence

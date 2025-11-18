@@ -57,20 +57,23 @@ def setup_logger(args):
 def collate_fn_individual(batch):
     """
     自定义collate函数，处理individual模式下的变长序列
+    返回 padding mask 用于 attention_convergence 等需要 mask 的编码器
     """
     descriptions, aa_reprs = zip(*batch)
 
     # 找到最大序列长度
     max_seq_len = max(aa_repr.shape[0] for aa_repr in aa_reprs if aa_repr is not None)
 
-    # 对每个aa_repr进行padding或truncation
+    # 对每个aa_repr进行padding或truncation，并记录原始长度
     padded_aa_reprs = []
+    seq_lengths = []
     for aa_repr in aa_reprs:
         if aa_repr is None:
             # 如果为None，创建一个零张量
             if len(padded_aa_reprs) > 0:
                 dim = padded_aa_reprs[0].shape[1]
                 aa_repr = torch.zeros(max_seq_len, dim, dtype=torch.float32)
+                seq_len = 0
             else:
                 raise ValueError("Cannot determine feature dimension from None tensor")
         else:
@@ -78,17 +81,26 @@ def collate_fn_individual(batch):
             if seq_len > max_seq_len:
                 # 截断
                 aa_repr = aa_repr[:max_seq_len]
+                seq_len = max_seq_len
             elif seq_len < max_seq_len:
                 # Padding
                 padding = torch.zeros(max_seq_len - seq_len, dim, dtype=aa_repr.dtype)
                 aa_repr = torch.cat([aa_repr, padding], dim=0)
         padded_aa_reprs.append(aa_repr)
+        seq_lengths.append(seq_len)
 
     # 堆叠成batch
     batch_aa = torch.stack(padded_aa_reprs, dim=0)
     batch_descriptions = list(descriptions)
 
-    return batch_descriptions, batch_aa
+    # 创建 padding mask: (B, S)，True 表示有效位置，False 表示 padding
+    batch_size = len(seq_lengths)
+    padding_mask = torch.zeros(batch_size, max_seq_len, dtype=torch.bool)
+    for i, seq_len in enumerate(seq_lengths):
+        if seq_len > 0:
+            padding_mask[i, :seq_len] = True
+
+    return batch_descriptions, batch_aa, padding_mask
 
 def load_train_data(args):
     if args.collective:
@@ -160,7 +172,7 @@ def load_model(args):
         elif args.aa_encoder_type == "gumbal_softmax":
             aa_encoder = GumbalSoftmax(embed_dim=args.aa_repr_dim, hidden_dim=args.aa_encoder_hidden_dim)
         elif args.aa_encoder_type == "attention_convergence":
-            aa_encoder = AttentionConvergence(embed_dim=args.aa_repr_dim)
+            aa_encoder = AttentionConvergence(embed_dim=args.aa_repr_dim, hidden_dim=args.aa_encoder_hidden_dim)
         else:
             raise ValueError(f"Invalid aa_encoder_type: {args.aa_encoder_type}")
         backbone = MicrobeCLIP(property_encoder,
@@ -231,8 +243,13 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
 
     for i, batch_data in enumerate(loader):
         # 使用dataloader获取aa和property pairs
-        batch_p, batch_a = batch_data
-        # aa B, S
+        if args.collective:
+            batch_p, batch_a = batch_data
+            padding_mask = None
+        else:
+            batch_p, batch_a, padding_mask = batch_data
+            padding_mask = padding_mask.to(args.device)
+        # aa B, S, H (individual) or B, H (collective)
         # property item B, S, H
 
         batch_a = batch_a.to(args.device)
