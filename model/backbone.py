@@ -277,6 +277,7 @@ class AttentionConvergence(nn.Module):
     def __init__(self, embed_dim, hidden_dim=None, *args, **kwargs):
         super().__init__()
         self.name = "attention_convergence"
+        self.embed_dim = embed_dim
         if hidden_dim is None:
             hidden_dim = embed_dim
         self.linear = nn.Linear(embed_dim, hidden_dim)
