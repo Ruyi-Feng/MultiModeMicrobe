@@ -172,6 +172,7 @@ class AttentionConvergence(nn.Module):
 class MicrobeProteinRepr(nn.Module):
     def __init__(self, embed_dim, num_layers, num_heads, dropout):
         super().__init__()
+        self.name = "microbe_protein_repr"
         self.embed_dim = embed_dim
         self.num_layers = num_layers
         # 为每一层创建独立的 LayerNorm，避免共享导致的问题
