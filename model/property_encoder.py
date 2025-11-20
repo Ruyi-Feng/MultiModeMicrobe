@@ -1,4 +1,3 @@
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model, TaskType
 
@@ -11,73 +10,62 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
                          lora_alpha=16,
                          lora_dropout=0.05,
                          lora_target_modules=None):
-    """
-    加载 property encoder (Qwen 模型)
 
-    Args:
-        model_path: 模型路径
-        device: 设备
-        pad_token: padding token
-        use_lora: 是否使用 LoRA
-        lora_r: LoRA 的秩 (rank)
-        lora_alpha: LoRA 的缩放因子
-        lora_dropout: LoRA dropout 率
-        lora_target_modules: LoRA 目标模块列表，如果为 None 则使用默认值
-
-    Returns:
-        property_encoder: 编码器模型
-        property_tokenizer: tokenizer
-    """
+    # 1. Tokenizer
     property_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
-    property_tokenizer.pad_token = pad_token
-    property_tokenizer.pad_token_id = property_tokenizer.convert_tokens_to_ids(pad_token)
+    # Qwen 默认通常没有 pad_token，建议手动指定 eos 作为 pad
+    if property_tokenizer.pad_token is None:
+        property_tokenizer.pad_token = pad_token
+        property_tokenizer.pad_token_id = property_tokenizer.convert_tokens_to_ids(pad_token)
 
-
+    # 2. 回退到 AutoModelForCausalLM (为了解决报错)
+    # 我们会在 forward 时通过 output_hidden_states=True 来获取表征
     property_encoder = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="auto" if use_lora else None,
         trust_remote_code=True,
         low_cpu_mem_usage=True if use_lora else False
     )
-    property_encoder.resize_token_embeddings(len(property_tokenizer))
+
     if not use_lora:
         property_encoder = property_encoder.to(device)
 
+    # 3. LoRA 配置
     if use_lora:
         if lora_target_modules is None:
             lora_target_modules = ["c_attn", "c_proj", "w1", "w2"]
 
         lora_config = LoraConfig(
-            r=lora_r,                          # LoRA 的秩
-            lora_alpha=lora_alpha,             # LoRA 的缩放因子
-            target_modules=lora_target_modules, # 目标模块
-            lora_dropout=lora_dropout,         # LoRA dropout
-            bias="lora_only",                       # 不训练 bias
-            task_type=TaskType.SEQ_CLS,      # 任务类型
-            modules_to_save=None               # 不保存额外模块
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=lora_target_modules,
+            lora_dropout=lora_dropout,
+            bias="lora_only",
+            # 【注意】虽然我们做特征提取，但因为基础模型是 CausalLM，
+            # 设为 CAUSAL_LM 可以避免 PEFT 报 mismatch 错误。
+            # 我们只需要在训练逻辑中忽略 lm_head 的输出即可。
+            task_type=TaskType.CAUSAL_LM, 
         )
 
         property_encoder = get_peft_model(property_encoder, lora_config)
 
-        # 验证参数冻结情况
-        trainable_params = sum(p.numel() for p in property_encoder.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in property_encoder.parameters())
-        print(f"可训练参数: {trainable_params:,} / 总参数: {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
+        # --- 关键：解决不收敛与显存问题 ---
+        use_gradient_checkpointing = True
 
-        # 启用梯度检查点以进一步减少显存占用
-        # 注意：梯度检查点可能会略微影响训练效果，但能显著减少显存
-        use_gradient_checkpointing = False  # 可以根据需要设置为False来提升训练效果
-        if use_gradient_checkpointing and hasattr(property_encoder, 'gradient_checkpointing_enable'):
-            property_encoder.gradient_checkpointing_enable()
-            print("已启用梯度检查点以减少显存占用（可能略微影响训练效果）")
+        if use_gradient_checkpointing:
+            if hasattr(property_encoder, 'gradient_checkpointing_enable'):
+                property_encoder.gradient_checkpointing_enable()
 
-        # 确保输入需要梯度（用于梯度检查点）
+                # 【核心】必须禁用 KV Cache，否则梯度断裂
+                property_encoder.config.use_cache = False
+                print("已启用梯度检查点 (use_cache=False)")
+
         if hasattr(property_encoder, 'enable_input_require_grads'):
             property_encoder.enable_input_require_grads()
 
         print("=" * 50)
-        print("LoRA 配置已应用，可训练参数信息：")
+        print("Qwen CLIP Encoder Ready (Backbone only)")
         property_encoder.print_trainable_parameters()
         print("=" * 50)
 
