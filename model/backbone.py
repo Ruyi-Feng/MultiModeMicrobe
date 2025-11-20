@@ -53,8 +53,18 @@ class MicrobeCLIP(nn.Module):
 
         self.property_encoder = property_encoder
         hidden_size = property_encoder.config.hidden_size
+
+        # 检测模型的数据类型（用于 LoRA 时的 float16 优化）
+        model_dtype = next(property_encoder.parameters()).dtype if list(property_encoder.parameters()) else torch.float32
+
         self.multihead_attn = nn.MultiheadAttention(cross_hidden_size, 4, 0.1, batch_first=True)
         self._property_proj = nn.Linear(hidden_size, cross_hidden_size, bias=False)
+
+        # 如果模型是 float16，投影层也使用 float16 以减少显存
+        if model_dtype == torch.float16:
+            self.multihead_attn = self.multihead_attn.half()
+            self._property_proj = self._property_proj.half()
+
         # 使用Xavier初始化投影层，有助于训练稳定性
         nn.init.xavier_uniform_(self.multihead_attn.in_proj_weight, gain=1.0)
         nn.init.xavier_uniform_(self._property_proj.weight, gain=1.0)
@@ -85,7 +95,12 @@ class MicrobeCLIP(nn.Module):
 
     def _forward_property(self, property_seq, property_cls_token_index=None):
         property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
-        property_embedding = property_embedding.hidden_states[-1].float()
+        # 保持原始数据类型，避免不必要的类型转换导致显存翻倍
+        # 如果模型是 float16，这里也保持 float16
+        property_embedding = property_embedding.hidden_states[-1]
+        # 只在需要时转换为 float（如果投影层是 float32）
+        if self._property_proj.weight.dtype != property_embedding.dtype:
+            property_embedding = property_embedding.to(self._property_proj.weight.dtype)
         property_embedding = self._property_proj(property_embedding)   # 这里还是有seq len在的。所以还是要加cls token来做全局表征。
         if property_cls_token_index is None:
             property_cls_token = property_embedding[:, 0, :]

@@ -272,9 +272,7 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
     )
 
     # 如果使用 LoRA 且已经使用 device_map="auto"，不需要再次移动模型
-    use_lora = getattr(args, 'use_lora', False)
-    if not use_lora:
-        model.to(args.device)
+    model.to(args.device)
     model.train()
     end = time.time()
 
