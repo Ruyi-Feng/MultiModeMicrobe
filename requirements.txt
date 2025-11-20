@@ -1,9 +1,11 @@
+tiktoken
+transformers_stream_generator
 # Core deep learning frameworks
 torch>=2.0.0
 
 # Transformers and related libraries
-transformers==4.48.1
-peft==0.17.1
+transformers==4.46.3
+peft<0.18
 accelerate>=0.20.0
 
 # Protein language models

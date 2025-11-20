@@ -53,7 +53,7 @@ class MicrobeCLIP(nn.Module):
 
         self.property_encoder = property_encoder
         hidden_size = property_encoder.config.hidden_size
-        self.multihead_attn = nn.MultiheadAttention(hidden_size, 4, 0.1, batch_first=True)
+        self.multihead_attn = nn.MultiheadAttention(cross_hidden_size, 4, 0.1, batch_first=True)
         self._property_proj = nn.Linear(hidden_size, cross_hidden_size, bias=False)
         # 使用Xavier初始化投影层，有助于训练稳定性
         nn.init.xavier_uniform_(self.multihead_attn.in_proj_weight, gain=1.0)
