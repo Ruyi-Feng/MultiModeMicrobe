@@ -156,7 +156,16 @@ def load_model(args):
         'property_encoder': (not args.freeze_property_encoder),
         'llm_decoder': (not args.freeze_llm_decoder),
                  }
-    property_encoder, property_tokenizer = get_property_encoder(args.property_model_path, args.device)
+    # 添加 LoRA 参数支持
+    property_encoder, property_tokenizer = get_property_encoder(
+        args.property_model_path,
+        args.device,
+        use_lora=getattr(args, 'use_lora', False),
+        lora_r=getattr(args, 'lora_r', 64),
+        lora_alpha=getattr(args, 'lora_alpha', 16),
+        lora_dropout=getattr(args, 'lora_dropout', 0.05),
+        lora_target_modules=getattr(args, 'lora_target_modules', None)
+    )
     if args.collective:
         backbone = MicrobeCLIP(property_encoder,
                                trainable=trainable,
