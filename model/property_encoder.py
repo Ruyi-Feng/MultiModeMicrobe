@@ -34,13 +34,20 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
     property_tokenizer.pad_token_id = property_tokenizer.convert_tokens_to_ids(pad_token)
 
     # 步骤1: 加载完整模型（此时所有参数默认可训练）
+    # 使用 float16 来减少显存占用
+    import torch
+    torch_dtype = torch.float16 if use_lora else None
+
     property_encoder = AutoModelForCausalLM.from_pretrained(
         model_path,
-        device_map="auto",
-        trust_remote_code=True
+        device_map="auto" if use_lora else None,
+        trust_remote_code=True,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True if use_lora else False
     )
     property_encoder.resize_token_embeddings(len(property_tokenizer))
-    property_encoder = property_encoder.to(device)
+    if not use_lora:
+        property_encoder = property_encoder.to(device)
 
     if use_lora:
         if lora_target_modules is None:
@@ -57,6 +64,20 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
         )
 
         property_encoder = get_peft_model(property_encoder, lora_config)
+
+        # 验证参数冻结情况
+        trainable_params = sum(p.numel() for p in property_encoder.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in property_encoder.parameters())
+        print(f"可训练参数: {trainable_params:,} / 总参数: {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
+
+        # 启用梯度检查点以进一步减少显存占用
+        if hasattr(property_encoder, 'gradient_checkpointing_enable'):
+            property_encoder.gradient_checkpointing_enable()
+            print("已启用梯度检查点以减少显存占用")
+
+        # 确保输入需要梯度（用于梯度检查点）
+        if hasattr(property_encoder, 'enable_input_require_grads'):
+            property_encoder.enable_input_require_grads()
 
         print("=" * 50)
         print("LoRA 配置已应用，可训练参数信息：")

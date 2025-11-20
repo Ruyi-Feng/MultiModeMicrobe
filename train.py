@@ -202,18 +202,41 @@ def init_optimizer(args, model):
     applied to all weights that are not gains or biases,
     and decay the learning rate using a cosine schedule
     (Loshchilov & Hutter, 2016).
+
+    如果使用 LoRA，可以使用 8bit 优化器来减少显存占用。
     """
     param_groups = get_optimizer_params(model, args.weight_decay)
 
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        lr=args.lr,
-        betas=(0.9, 0.98),
-        eps=1e-6,
-        weight_decay=0.0,
-        foreach=False,
-        fused=False,
-    )
+    # 检查是否使用 LoRA（通过检查是否有 lora_ 参数）
+    use_lora = any('lora_' in name for name, _ in model.named_parameters())
+    use_8bit_optimizer = getattr(args, 'use_8bit_optimizer', False) and use_lora
+
+    if use_8bit_optimizer:
+        try:
+            import bitsandbytes as bnb
+            optimizer = bnb.optim.AdamW8bit(
+                param_groups,
+                lr=args.lr,
+                betas=(0.9, 0.98),
+                eps=1e-6,
+                weight_decay=0.0,
+            )
+            print("使用 8bit 优化器以减少显存占用")
+        except ImportError:
+            print("警告: bitsandbytes 未安装，使用标准 AdamW 优化器")
+            print("安装命令: pip install bitsandbytes")
+            use_8bit_optimizer = False
+
+    if not use_8bit_optimizer:
+        optimizer = torch.optim.AdamW(
+            param_groups,
+            lr=args.lr,
+            betas=(0.9, 0.98),
+            eps=1e-6,
+            weight_decay=0.0,
+            foreach=False,
+            fused=False,
+        )
 
     # 添加 warmup 的 scheduler
     warmup_epochs = getattr(args, 'warmup_epochs', 2)
@@ -248,7 +271,10 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
         prefix="Epoch: [{}]".format(epoch),
     )
 
-    model.to(args.device)
+    # 如果使用 LoRA 且已经使用 device_map="auto"，不需要再次移动模型
+    use_lora = getattr(args, 'use_lora', False)
+    if not use_lora:
+        model.to(args.device)
     model.train()
     end = time.time()
 
@@ -290,8 +316,13 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
         optimizer.zero_grad()
         loss.backward()
         # 添加梯度裁剪，防止梯度爆炸
+        # 只对可训练参数进行梯度裁剪，避免遍历所有参数
         max_grad_norm = getattr(args, 'max_grad_norm', 1.0)
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if trainable_params:
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm)
+        else:
+            grad_norm = torch.tensor(0.0)
         optimizer.step()
 
         # measure elapsed time
