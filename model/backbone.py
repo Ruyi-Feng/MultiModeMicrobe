@@ -19,10 +19,12 @@ class MicrobeCLIP(nn.Module):
                  aa_encoder = None,
                  collective: bool = True,
                  cross_hidden_size: int = 128,
-                 aa_representation_dim: int = 128):
+                 aa_representation_dim: int = 128,
+                 property_attn: bool = False):
         super(MicrobeCLIP, self).__init__()
 
         self.collective = collective
+        self.property_attn = property_attn
 
         self._init_aa_net(aa_encoder, trainable, aa_representation_dim, cross_hidden_size)
         self._init_property_net(property_encoder, trainable, cross_hidden_size)
@@ -37,10 +39,24 @@ class MicrobeCLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def _init_property_net(self, property_encoder, trainable, cross_hidden_size):
-        grad_adjustment(property_encoder, trainable['property_encoder'])
+        # 检测是否使用 LoRA：检查参数名中是否有 'lora_'
+        is_lora = any('lora_' in name for name, _ in property_encoder.named_parameters())
+
+        if trainable['property_encoder']:
+            # 如果可训练
+            if is_lora:
+                pass
+            else:
+                grad_adjustment(property_encoder, True)
+        else:
+            grad_adjustment(property_encoder, False)
+
         self.property_encoder = property_encoder
-        self._property_proj = nn.Linear(property_encoder.config.hidden_size, cross_hidden_size, bias=False)
+        hidden_size = property_encoder.config.hidden_size
+        self.multihead_attn = nn.MultiheadAttention(hidden_size, 4, 0.1, batch_first=True)
+        self._property_proj = nn.Linear(hidden_size, cross_hidden_size, bias=False)
         # 使用Xavier初始化投影层，有助于训练稳定性
+        nn.init.xavier_uniform_(self.multihead_attn.in_proj_weight, gain=1.0)
         nn.init.xavier_uniform_(self._property_proj.weight, gain=1.0)
 
     def _init_aa_net(self, aa_encoder, trainable, aa_representation_dim, cross_hidden_size):
@@ -77,6 +93,12 @@ class MicrobeCLIP(nn.Module):
             batch_size = property_embedding.size(0)
             property_cls_token = property_embedding[torch.arange(batch_size), property_cls_token_index, :]
         property_embedding = property_embedding[:, 1:, :]
+
+        if self.property_attn:
+            property_cls_token, _ = self.multihead_attn(property_cls_token.unsqueeze(1), property_embedding,
+                                                 property_embedding,
+                                                 need_weights=False,
+                                                 average_attn_weights=True)  # 如果需要分开每个头，这里false
         return property_embedding, property_cls_token
 
     def _forward_aa(self, aa_rep, padding_mask=None):

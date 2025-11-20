@@ -48,6 +48,14 @@ def train_args():
     parser.add_argument('--freeze_property_encoder', action='store_true', default=False)
     parser.add_argument('--property_model_path', type=str, default="Qwen/Qwen-1_8B")
 
+    # LoRA parameters for property encoder
+    parser.add_argument('--use_lora', action='store_true', default=False, help='Use LoRA for property encoder')
+    parser.add_argument('--lora_r', type=int, default=64, help='LoRA rank (r)')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha (scaling factor)')
+    parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout rate')
+    parser.add_argument('--lora_target_modules', type=str, nargs='+', default=None,
+                        help='Target modules for LoRA (e.g., c_attn c_proj w1 w2). If None, uses default for Qwen model')
+
     # backbone parameters
     parser.add_argument('--cross_hidden_size', type=int, default=64)
 
