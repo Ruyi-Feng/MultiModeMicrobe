@@ -99,7 +99,7 @@ class MicrobeCLIP(nn.Module):
                                                  property_embedding,
                                                  need_weights=False,
                                                  average_attn_weights=True)  # 如果需要分开每个头，这里false
-        return property_embedding, property_cls_token
+        return property_embedding, property_cls_token.squeeze(1)
 
     def _forward_aa(self, aa_rep, padding_mask=None):
         if self.collective:
