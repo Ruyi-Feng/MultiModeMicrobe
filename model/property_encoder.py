@@ -53,8 +53,8 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
             lora_alpha=lora_alpha,             # LoRA 的缩放因子
             target_modules=lora_target_modules, # 目标模块
             lora_dropout=lora_dropout,         # LoRA dropout
-            bias="none",                       # 不训练 bias
-            task_type=TaskType.CAUSAL_LM,      # 任务类型
+            bias="lora_only",                       # 不训练 bias
+            task_type=TaskType.SEQ_CLS,      # 任务类型
             modules_to_save=None               # 不保存额外模块
         )
 

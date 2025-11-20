@@ -352,8 +352,14 @@ def main():
         logger.info(f"Epoch {epoch+1}/{args.epoch}")
         logger.info(f"{'='*80}")
 
-        scheduler.step()
+        # 记录当前学习率
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f"Current learning rate: {current_lr:.2e}")
+
         train(args, model, property_tokenizer, train_loader, optimizer, epoch, logger)
+
+        # 在每个epoch结束后更新学习率，而不是在开始
+        scheduler.step()
 
         save_name = os.path.join(args.save_path, "checkpoint.pth.tar")
         save_checkpoint(
