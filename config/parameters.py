@@ -56,6 +56,8 @@ def train_args():
     parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout rate')
     parser.add_argument('--lora_target_modules', type=str, nargs='+', default=None,
                         help='Target modules for LoRA (e.g., c_attn c_proj w1 w2). If None, uses default for Qwen model')
+    parser.add_argument('--lora_lr_multiplier', type=float, default=10.0,
+                        help='Learning rate multiplier for LoRA parameters (default: 10.0, meaning LoRA lr = base_lr × 10)')
 
 
     # backbone parameters

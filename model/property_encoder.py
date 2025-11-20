@@ -66,9 +66,11 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
         print(f"可训练参数: {trainable_params:,} / 总参数: {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
 
         # 启用梯度检查点以进一步减少显存占用
-        if hasattr(property_encoder, 'gradient_checkpointing_enable'):
+        # 注意：梯度检查点可能会略微影响训练效果，但能显著减少显存
+        use_gradient_checkpointing = False  # 可以根据需要设置为False来提升训练效果
+        if use_gradient_checkpointing and hasattr(property_encoder, 'gradient_checkpointing_enable'):
             property_encoder.gradient_checkpointing_enable()
-            print("已启用梯度检查点以减少显存占用")
+            print("已启用梯度检查点以减少显存占用（可能略微影响训练效果）")
 
         # 确保输入需要梯度（用于梯度检查点）
         if hasattr(property_encoder, 'enable_input_require_grads'):

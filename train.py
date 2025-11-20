@@ -202,12 +202,75 @@ def init_optimizer(args, model):
     applied to all weights that are not gains or biases,
     and decay the learning rate using a cosine schedule
     (Loshchilov & Hutter, 2016).
+    
+    如果使用 LoRA，LoRA 参数通常需要更高的学习率（通常是基础学习率的2-10倍）。
     """
-    param_groups = get_optimizer_params(model, args.weight_decay)
+    # 检查是否使用 LoRA
+    use_lora = getattr(args, 'use_lora', False)
+    lora_lr_multiplier = getattr(args, 'lora_lr_multiplier', 10.0)  # LoRA学习率倍数，默认10倍
+    
+    if use_lora:
+        # 为 LoRA 参数和其他参数设置不同的学习率
+        lora_decay_params = []
+        lora_no_decay_params = []
+        other_decay_params = []
+        other_no_decay_params = []
+        no_decay = ["bias", "LayerNorm.weight"]
+        
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            
+            # 检查是否是 LoRA 参数
+            is_lora = 'lora_' in name
+            has_no_decay = any(nd in name for nd in no_decay)
+            
+            if is_lora:
+                if has_no_decay:
+                    lora_no_decay_params.append(param)
+                else:
+                    lora_decay_params.append(param)
+            else:
+                if has_no_decay:
+                    other_no_decay_params.append(param)
+                else:
+                    other_decay_params.append(param)
+        
+        # 构建参数组：LoRA参数使用更高的学习率
+        param_groups = []
+        if lora_decay_params:
+            param_groups.append({
+                "params": lora_decay_params,
+                "lr": args.lr * lora_lr_multiplier,
+                "weight_decay": args.weight_decay
+            })
+        if lora_no_decay_params:
+            param_groups.append({
+                "params": lora_no_decay_params,
+                "lr": args.lr * lora_lr_multiplier,
+                "weight_decay": 0.0
+            })
+        if other_decay_params:
+            param_groups.append({
+                "params": other_decay_params,
+                "lr": args.lr,
+                "weight_decay": args.weight_decay
+            })
+        if other_no_decay_params:
+            param_groups.append({
+                "params": other_no_decay_params,
+                "lr": args.lr,
+                "weight_decay": 0.0
+            })
+
+        print(f"LoRA 参数使用学习率: {args.lr * lora_lr_multiplier:.2e} (基础学习率 {args.lr:.2e} × {lora_lr_multiplier})")
+        print(f"其他参数使用学习率: {args.lr:.2e}")
+    else:
+        param_groups = get_optimizer_params(model, args.weight_decay)
 
     optimizer = torch.optim.AdamW(
         param_groups,
-        lr=args.lr,
+        lr=args.lr,  # 这个lr会被param_groups中的lr覆盖
         betas=(0.9, 0.98),
         eps=1e-6,
         weight_decay=0.0,
