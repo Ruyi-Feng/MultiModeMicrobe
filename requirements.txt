@@ -1,0 +1,30 @@
+# Core deep learning frameworks
+torch>=2.0.0
+
+# Transformers and related libraries
+transformers==4.48.1
+peft==0.17.1
+accelerate>=0.20.0
+
+# Protein language models
+fair-esm==2.0.0  # ESM protein language model
+
+# Data processing
+numpy>=1.21.0
+h5py>=3.7.0
+
+# Configuration and utilities
+pyyaml>=6.0
+tqdm>=4.64.0
+
+# Distributed training (optional, for finetune.py)
+deepspeed>=0.9.0
+
+# Visualization (optional, for test scripts)
+matplotlib>=3.5.0
+
+# Standard library dependencies (usually included, but listed for completeness)
+# dataclasses  # Python 3.7+ built-in
+# typing  # Python 3.5+ built-in
+# pathlib  # Python 3.4+ built-in
+
