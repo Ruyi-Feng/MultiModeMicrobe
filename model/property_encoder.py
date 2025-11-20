@@ -33,16 +33,11 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
     property_tokenizer.pad_token = pad_token
     property_tokenizer.pad_token_id = property_tokenizer.convert_tokens_to_ids(pad_token)
 
-    # 步骤1: 加载完整模型（此时所有参数默认可训练）
-    # 使用 float16 来减少显存占用
-    import torch
-    torch_dtype = torch.float16 if use_lora else None
 
     property_encoder = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="auto" if use_lora else None,
         trust_remote_code=True,
-        torch_dtype=torch_dtype,
         low_cpu_mem_usage=True if use_lora else False
     )
     property_encoder.resize_token_embeddings(len(property_tokenizer))
