@@ -47,6 +47,7 @@ def train_args():
     # property encoder parameters
     parser.add_argument('--freeze_property_encoder', action='store_true', default=False)
     parser.add_argument('--property_model_path', type=str, default="Qwen/Qwen-1_8B")
+    parser.add_argument('--property_attn', action='store_true', default=False)
 
     # LoRA parameters for property encoder
     parser.add_argument('--use_lora', action='store_true', default=False, help='Use LoRA for property encoder')

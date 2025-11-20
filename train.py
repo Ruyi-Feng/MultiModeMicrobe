@@ -171,7 +171,9 @@ def load_model(args):
                                trainable=trainable,
                                collective=args.collective,
                                cross_hidden_size=args.cross_hidden_size,
-                               aa_representation_dim=args.aa_repr_dim)
+                               aa_representation_dim=args.aa_repr_dim,
+                               property_attn=args.property_attn
+                               )
     else:
         if args.aa_encoder_type == "microbe_protein_repr":
             aa_encoder = MicrobeProteinRepr(embed_dim=args.aa_repr_dim,
