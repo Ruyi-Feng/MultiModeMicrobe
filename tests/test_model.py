@@ -1,5 +1,5 @@
 
-from model.backbone import Microbe, MicrobeCLIP, MicrobeProteinRepr
+from model.backbone import MicrobeCLIP, MicrobeProteinRepr
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import torch.nn as nn
