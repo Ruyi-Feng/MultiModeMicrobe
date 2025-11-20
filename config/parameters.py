@@ -56,8 +56,7 @@ def train_args():
     parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout rate')
     parser.add_argument('--lora_target_modules', type=str, nargs='+', default=None,
                         help='Target modules for LoRA (e.g., c_attn c_proj w1 w2). If None, uses default for Qwen model')
-    parser.add_argument('--use_8bit_optimizer', action='store_true', default=False,
-                        help='Use 8bit optimizer for LoRA training to reduce memory usage')
+
 
     # backbone parameters
     parser.add_argument('--cross_hidden_size', type=int, default=64)
