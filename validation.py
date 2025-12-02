@@ -5,9 +5,11 @@ import torch.nn.functional as F
 import logging
 from datetime import datetime
 from torch.utils.data import DataLoader
+import h5py
 
 from config import train_args
 from exp.dataset import IndividualDataset, CollectiveDataset
+from utils.json_loader import load_json, save_json
 from utils.tools import compute_topk_accuracy
 from train import (
     collate_fn_individual,
@@ -136,95 +138,159 @@ def validate(args, model, tokenizer_p, loader, logger):
 
     return top1.avg
 
-def validate_retrieval(args, model, tokenizer_p, loader, logger):
-    """
-    Full dataset retrieval validation (Global Cosine Similarity)
-    """
-    logger.info(f"Starting retrieval validation on full dataset (Size: {len(loader.dataset)})...")
-    model.eval()
-    model.to(args.device)
+class RetrievalValidator:
+    def __init__(self, args, model, tokenizer_p, loader, logger):
+        self.args = args
+        self.model = model
+        self.tokenizer_p = tokenizer_p
+        self.loader = loader
+        self.logger = logger
+        self.protein_index = load_json(args.protein_index_path)
+        self.top_k = 30
 
-    all_aa_feats = []
-    all_prop_feats = []
+    def get_importance_score(self, aa_weights, keys):
+        if self.args.collective:
+            raise ValueError("Collective mode is not supported for importance score calculation")
 
-    with torch.no_grad():
-        for i, batch_data in enumerate(loader):
-            if args.collective:
-                batch_p, batch_a = batch_data
-                padding_mask = None
+        import_rank = aa_weights.argsort(dim=1, descending=False)
+        batch_top_k_protein_id = {}
+        for batch_key, batch_rank_k in zip(keys, import_rank.tolist()):
+            top_k_protein_id = {}
+            h5_path = os.path.join(self.args.data_path, f"{batch_key}.h5")
+            with h5py.File(h5_path, 'r') as f:
+            # 取出排行前K个氨基酸的索引,形成列表。
+                for i, k in enumerate(batch_rank_k):
+                    if k >= self.top_k:
+                        continue
+                    index_k = self.get_true_index(i, self.protein_index[batch_key])
+                    protein_id = f['protein_id'][index_k]
+                    top_k_protein_id.update({k: protein_id.decode('utf-8')})
+            batch_top_k_protein_id.update({batch_key: top_k_protein_id})
+        return batch_top_k_protein_id
+
+    def get_true_index(self, rank_k: int, protein_index: list):
+        """
+        rank_k 是一个索引，protein_index是列表
+        protein_index:
+        [[0], [1], [2], [3, 4], [5, 6], [7], ...]
+        目的是找到rank_k在protein_index中的真实索引。
+        比如rank_k 0, 在protein_index中第0个列表中, 所以返回0
+        rank_k 4, 在protein_index中第3个列表中, 所以返回3
+        rank_k 7, 在protein_index中第5个列表中, 所以返回5
+        """
+        if rank_k < len(protein_index):
+            if rank_k in protein_index[rank_k]:
+                return rank_k
             else:
-                batch_p, batch_a, padding_mask = batch_data
-                padding_mask = padding_mask.to(args.device)
-
-            batch_a = batch_a.to(args.device)
-            batch_p, cls_index_p = property_converter(batch_p, tokenizer_p, args.device)
-
-            # Get embeddings
-            out = model(
-                batch_a,
-                batch_p,
-                property_cls_token_index=cls_index_p,
-                return_hidden_states=True,
-                padding_mask=padding_mask
-            )
-
-            # 收集 normalized features (on CPU to save GPU memory)
-            all_aa_feats.append(out["aa_representation"].cpu())
-            all_prop_feats.append(out["property_representation"].cpu())
-
-            if (i + 1) % 50 == 0:
-                logger.info(f"Processed {i + 1} batches...")
-
-    # Concatenate all features
-    all_aa_feats = torch.cat(all_aa_feats, dim=0)
-    all_prop_feats = torch.cat(all_prop_feats, dim=0)
-
-    logger.info(f"Collected features: AA {all_aa_feats.shape}, Property {all_prop_feats.shape}")
-
-    # Compute similarity matrix
-    device = args.device
-
-    try:
-        # Try full matrix on GPU
-        logger.info("Calculating similarity matrix...")
-        all_aa_feats = all_aa_feats.to(device)
-        all_prop_feats = all_prop_feats.to(device)
-        logit_scale = model.logit_scale.exp().to(device)
-
-        # Logits = scale * AA @ Prop.T
-        # Note: Features should already be normalized by the model
-        logits = logit_scale * all_aa_feats @ all_prop_feats.t()
-
-    except RuntimeError as e:
-        if "out of memory" in str(e):
-            logger.warning("OOM on GPU, switching to CPU for similarity calculation...")
-            torch.cuda.empty_cache()
-            all_aa_feats = all_aa_feats.cpu()
-            all_prop_feats = all_prop_feats.cpu()
-            logit_scale = model.logit_scale.exp().cpu()
-            logits = logit_scale * all_aa_feats @ all_prop_feats.t()
-            device = 'cpu'
+                for i in range(rank_k):
+                    if rank_k in protein_index[rank_k - i]:
+                        return rank_k - i
+                return None
         else:
-            raise e
+            for i in range(len(protein_index)):
+                if rank_k in protein_index[-1 - i]:
+                    return len(protein_index) - 1 - i
+            return None
 
-    # Generate labels (diagonal)
-    batch_size = logits.shape[0]
-    labels = torch.arange(batch_size, device=device)
 
-    # Calculate Accuracies
-    logger.info("Computing top-k accuracy...")
-    acc1_a2p, acc5_a2p = compute_topk_accuracy(logits, labels, topk=(1, 5))
-    acc1_p2a, acc5_p2a = compute_topk_accuracy(logits.t(), labels, topk=(1, 5))
+    def run(self):
+        """
+        Full dataset retrieval validation (Global Cosine Similarity)
+        """
+        self.logger.info(f"Starting retrieval validation on full dataset (Size: {len(self.loader.dataset)})...")
+        self.model.eval()
+        self.model.to(self.args.device)
 
-    logger.info(f"Retrieval Results (Total {batch_size} samples):")
-    logger.info(f"AA -> Property: Acc@1: {acc1_a2p.item():.2f}%, Acc@5: {acc5_a2p.item():.2f}%")
-    logger.info(f"Property -> AA: Acc@1: {acc1_p2a.item():.2f}%, Acc@5: {acc5_p2a.item():.2f}%")
+        all_aa_feats = []
+        all_prop_feats = []
+        all_top_k_protein_ids = {}
 
-    avg_acc1 = (acc1_a2p + acc1_p2a) / 2
-    avg_acc5 = (acc5_a2p + acc5_p2a) / 2
-    logger.info(f"Average: Acc@1: {avg_acc1.item():.2f}%, Acc@5: {avg_acc5.item():.2f}%")
+        with torch.no_grad():
+            for i, batch_data in enumerate(self.loader):
+                if self.args.collective:
+                    batch_p, batch_a, batch_keys = batch_data
+                    padding_mask = None
+                else:
+                    batch_p, batch_a, padding_mask, batch_keys = batch_data
+                    padding_mask = padding_mask.to(self.args.device)
 
-    return avg_acc1.item()
+                batch_a = batch_a.to(self.args.device)
+                batch_p, cls_index_p = property_converter(batch_p, self.tokenizer_p, self.args.device)
+
+                # Get embeddings
+                out = self.model(
+                    batch_a,
+                    batch_p,
+                    property_cls_token_index=cls_index_p,
+                    return_hidden_states=True,
+                    padding_mask=padding_mask,
+                    return_weights=True
+                )
+
+                aa_weights = out["aa_weights"]
+                top_k_protein_ids = self.get_importance_score(aa_weights, batch_keys)
+
+                # 收集 normalized features (on CPU to save GPU memory)
+                all_aa_feats.append(out["aa_representation"].cpu())
+                all_prop_feats.append(out["property_representation"].cpu())
+                all_top_k_protein_ids.update(top_k_protein_ids)
+
+                if (i + 1) % 50 == 0:
+                    self.logger.info(f"Processed {i + 1} batches...")
+
+        # save all_top_k_protein_ids to json
+        save_json(all_top_k_protein_ids, os.path.join(self.args.save_path, "all_top_k_protein_ids.json"))
+
+        # Concatenate all features
+        all_aa_feats = torch.cat(all_aa_feats, dim=0)
+        all_prop_feats = torch.cat(all_prop_feats, dim=0)
+
+        self.logger.info(f"Collected features: AA {all_aa_feats.shape}, Property {all_prop_feats.shape}")
+
+        # Compute similarity matrix
+        device = self.args.device
+
+        try:
+            # Try full matrix on GPU
+            self.logger.info("Calculating similarity matrix...")
+            all_aa_feats = all_aa_feats.to(device)
+            all_prop_feats = all_prop_feats.to(device)
+            logit_scale = self.model.logit_scale.exp().to(device)
+
+            # Logits = scale * AA @ Prop.T
+            # Note: Features should already be normalized by the model
+            logits = logit_scale * all_aa_feats @ all_prop_feats.t()
+
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                self.logger.warning("OOM on GPU, switching to CPU for similarity calculation...")
+                torch.cuda.empty_cache()
+                all_aa_feats = all_aa_feats.cpu()
+                all_prop_feats = all_prop_feats.cpu()
+                logit_scale = self.model.logit_scale.exp().cpu()
+                logits = logit_scale * all_aa_feats @ all_prop_feats.t()
+                device = 'cpu'
+            else:
+                raise e
+
+        # Generate labels (diagonal)
+        batch_size = logits.shape[0]
+        labels = torch.arange(batch_size, device=device)
+
+        # Calculate Accuracies
+        self.logger.info("Computing top-k accuracy...")
+        acc1_a2p, acc5_a2p = compute_topk_accuracy(logits, labels, topk=(1, 5))
+        acc1_p2a, acc5_p2a = compute_topk_accuracy(logits.t(), labels, topk=(1, 5))
+
+        self.logger.info(f"Retrieval Results (Total {batch_size} samples):")
+        self.logger.info(f"AA -> Property: Acc@1: {acc1_a2p.item():.2f}%, Acc@5: {acc5_a2p.item():.2f}%")
+        self.logger.info(f"Property -> AA: Acc@1: {acc1_p2a.item():.2f}%, Acc@5: {acc5_p2a.item():.2f}%")
+
+        avg_acc1 = (acc1_a2p + acc1_p2a) / 2
+        avg_acc5 = (acc5_a2p + acc5_p2a) / 2
+        self.logger.info(f"Average: Acc@1: {avg_acc1.item():.2f}%, Acc@5: {avg_acc5.item():.2f}%")
+
+        return avg_acc1.item()
 
 def main():
     args = train_args()
@@ -261,7 +327,8 @@ def main():
     # validate(args, model, property_tokenizer, val_loader, logger)
 
     # 运行 retrieval 验证
-    validate_retrieval(args, model, property_tokenizer, val_loader, logger)
+    validator = RetrievalValidator(args, model, property_tokenizer, val_loader, logger)
+    validator.run()
 
 if __name__ == "__main__":
     main()
