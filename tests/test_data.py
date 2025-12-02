@@ -49,7 +49,7 @@ def test_collective_data_loader():
     dataset = CollectiveDataset(args)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
-    for description, aa_repr in dataloader:
+    for description, aa_repr, key in dataloader:
         print("property description: ",description)
         print("protein repr: ", aa_repr.shape)
         break
@@ -60,7 +60,7 @@ def test_individual_data_loader():
     dataset = IndividualDataset(args)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
-    for description, aa_repr in dataloader:
+    for description, aa_repr, key in dataloader:
         print("property description: ",description)
         print("protein repr: ", aa_repr.shape)
         break

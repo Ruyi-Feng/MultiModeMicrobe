@@ -60,7 +60,7 @@ class IndividualDataset(Dataset):
         description = self.txt_loader(txt_head, txt_tail)
         aa_index_list = self.protein_index[key]
         aa_representation = self._get_aa_repr_from_h5(aa_index_list, key)
-        return description, aa_representation
+        return description, aa_representation, key
 
 
 class CollectiveDataset(Dataset):
@@ -93,7 +93,7 @@ class CollectiveDataset(Dataset):
         key, txt_head, txt_tail, aa_index = self.train_idx[index]
         description = self.txt_loader(txt_head, txt_tail)
         aa_representation = self.aa_loader(aa_index)
-        return description, aa_representation
+        return description, aa_representation, key
 
     def __len__(self):
         return self.dataset_length
