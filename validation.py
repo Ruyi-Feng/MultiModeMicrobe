@@ -20,6 +20,8 @@ from train import (
     ProgressMeter
 )
 
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
 def setup_logger(args):
     """
     设置日志记录器，同时输出到控制台和文件
@@ -148,11 +150,72 @@ class RetrievalValidator:
         self.protein_index = load_json(args.protein_index_path)
         self.top_k = 30
 
-    def get_importance_score(self, aa_weights, keys):
+    def _visual_weights(self, aa_weights, keys):
+        """
+        把aa_weights画成小方格，颜色是重要性。方格随着seq长度转行。在整个图的最右侧给出颜色bar。
+        图名为key
+        这里有batch，按照batch分不同的图。
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import math
+
+        # 确保保存路径存在
+        save_dir = os.path.join(self.args.save_path, "visual_weights")
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 转换为numpy
+        if isinstance(aa_weights, torch.Tensor):
+            weights_np = aa_weights.detach().cpu().numpy()
+        else:
+            weights_np = aa_weights
+
+        for idx, key in enumerate(keys):
+            w = weights_np[idx]
+
+            # 去除padding (假设尾部0为padding)
+            nonzero_idx = np.where(w > 1e-8)[0]
+            if len(nonzero_idx) > 0:
+                w = w[:nonzero_idx[-1] + 1]
+
+            seq_len = len(w)
+            if seq_len == 0:
+                continue
+
+            # 设置每行的格数
+            n_cols = 50
+            n_rows = math.ceil(seq_len / n_cols)
+
+            # 补全矩阵
+            pad_len = n_rows * n_cols - seq_len
+            w_padded = np.pad(w, (0, pad_len), constant_values=np.nan)
+            w_matrix = w_padded.reshape(n_rows, n_cols)
+
+            # 绘图
+            plt.figure(figsize=(15, max(2, n_rows * 0.5)))
+
+            # 创建colormap，将NaN设为白色
+            cmap = plt.cm.viridis
+            cmap.set_bad('white')
+
+            im = plt.imshow(w_matrix, cmap=cmap, aspect='equal')
+            plt.colorbar(im, label='Importance Score', fraction=0.046, pad=0.04)
+            plt.title(f"Protein: {key}")
+            plt.axis('off')
+
+            # 保存
+            # plt.savefig(os.path.join(save_dir, f"{key}.png"), bbox_inches='tight', dpi=150)
+            plt.show()
+            # plt.close()
+
+
+    def get_importance_score(self, aa_weights, keys, if_visualize=False):
         if self.args.collective:
             raise ValueError("Collective mode is not supported for importance score calculation")
 
         import_rank = aa_weights.argsort(dim=1, descending=False)
+        if if_visualize:
+            self._visual_weights(aa_weights, keys)
         batch_top_k_protein_id = {}
         for batch_key, batch_rank_k in zip(keys, import_rank.tolist()):
             top_k_protein_id = {}
@@ -228,7 +291,7 @@ class RetrievalValidator:
                 )
 
                 aa_weights = out["aa_weights"]
-                top_k_protein_ids = self.get_importance_score(aa_weights, batch_keys)
+                top_k_protein_ids = self.get_importance_score(aa_weights, batch_keys, if_visualize=True)
 
                 # 收集 normalized features (on CPU to save GPU memory)
                 all_aa_feats.append(out["aa_representation"].cpu())
