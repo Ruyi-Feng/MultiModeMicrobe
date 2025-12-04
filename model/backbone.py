@@ -101,12 +101,12 @@ class MicrobeCLIP(nn.Module):
                                                  average_attn_weights=True)  # 如果需要分开每个头，这里false
         return property_embedding, property_cls_token.squeeze(1)
 
-    def _forward_aa(self, aa_rep, padding_mask=None):
+    def _forward_aa(self, aa_rep, padding_mask=None, return_weights=False):
         if self.collective:
             if aa_rep.ndim != 2:
                 raise ValueError("aa_rep must be 2D (batch, dim) when collective is True, please use collective features")
             aa_embedding = self._aa_proj(aa_rep)  # B, H
-            return aa_embedding
+            return aa_embedding, None
         else:
             # 如果是cross_attention_fusion，需要加上cls token 再做attention
             if self.aa_encoder.name == "microbe_protein_repr":
@@ -117,15 +117,18 @@ class MicrobeCLIP(nn.Module):
                     cls_mask = torch.ones(aa_rep.size(0), 1, dtype=padding_mask.dtype, device=padding_mask.device)
                     padding_mask = torch.cat([cls_mask, padding_mask], dim=1)
             if self.aa_encoder.name == "attention_convergence" and padding_mask is not None:
-                aa_embedding = self.aa_encoder(aa_rep, padding_mask=padding_mask)
+                aa_embedding, aa_weights = self.aa_encoder(aa_rep, padding_mask=padding_mask, return_weights=True)
             else:
                 aa_embedding = self.aa_encoder(aa_rep)
             aa_embedding = self._aa_proj(aa_embedding)
-            return aa_embedding
+            if return_weights:
+                return aa_embedding, aa_weights
+            else:
+                return aa_embedding, None
 
-    def forward(self, aa_seq, property_seq, property_cls_token_index=None, return_hidden_states=False, padding_mask=None):
+    def forward(self, aa_seq, property_seq, property_cls_token_index=None, return_hidden_states=False, padding_mask=None, return_weights=False):
 
-        aa_embedding = self._forward_aa(aa_seq, padding_mask=padding_mask)
+        aa_embedding, aa_weights = self._forward_aa(aa_seq, padding_mask=padding_mask, return_weights=return_weights)
         _, property_cls_token = self._forward_property(property_seq, property_cls_token_index)
 
         aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
@@ -141,13 +144,15 @@ class MicrobeCLIP(nn.Module):
                 "aa_representation": aa_embedding,
                 "property_representation": property_cls_token,
                 "logits_aa": logits_aa,
-                "logits_property": logits_property
+                "logits_property": logits_property,
+                "aa_weights": aa_weights
             }
             return pred
         else:
             pred = {
                 "logits_aa": logits_aa,
-                "logits_property": logits_property
+                "logits_property": logits_property,
+                "aa_weights": aa_weights
             }
             return pred
 
@@ -190,7 +195,7 @@ class AttentionConvergence(nn.Module):
         # 使用较小的初始化值，与代码库中其他参数初始化保持一致
         self.v = nn.Parameter(torch.randn(hidden_dim) * 0.02, requires_grad=True)
 
-    def forward(self, aa_repr, padding_mask=None):
+    def forward(self, aa_repr, padding_mask=None, return_weights=False):
         """
         Args:
             aa_repr: (B, S, embed_dim) 输入序列表示
@@ -211,7 +216,10 @@ class AttentionConvergence(nn.Module):
             uniform_weights = torch.ones_like(weights) / weights.size(1)
             weights = torch.where(all_padding.unsqueeze(1), uniform_weights, weights)
         x = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)  # (B, S, embed_dim) -> (B, embed_dim)
-        return x
+        if return_weights:
+            return x, weights
+        else:
+            return x
 
 
 class MicrobeProteinRepr(nn.Module):

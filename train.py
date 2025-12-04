@@ -59,7 +59,7 @@ def collate_fn_individual(batch):
     自定义collate函数，处理individual模式下的变长序列
     返回 padding mask 用于 attention_convergence 等需要 mask 的编码器
     """
-    descriptions, aa_reprs = zip(*batch)
+    descriptions, aa_reprs, keys = zip(*batch)
 
     # 找到最大序列长度
     max_seq_len = max(aa_repr.shape[0] for aa_repr in aa_reprs if aa_repr is not None)
@@ -92,7 +92,7 @@ def collate_fn_individual(batch):
     # 堆叠成batch
     batch_aa = torch.stack(padded_aa_reprs, dim=0)
     batch_descriptions = list(descriptions)
-
+    batch_keys = list(keys)
     # 创建 padding mask: (B, S)，True 表示有效位置，False 表示 padding
     batch_size = len(seq_lengths)
     padding_mask = torch.zeros(batch_size, max_seq_len, dtype=torch.bool)
@@ -100,7 +100,7 @@ def collate_fn_individual(batch):
         if seq_len > 0:
             padding_mask[i, :seq_len] = True
 
-    return batch_descriptions, batch_aa, padding_mask
+    return batch_descriptions, batch_aa, padding_mask, batch_keys
 
 def load_train_data(args):
     if args.collective:
@@ -318,10 +318,10 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
     for i, batch_data in enumerate(loader):
         # 使用dataloader获取aa和property pairs
         if args.collective:
-            batch_p, batch_a = batch_data
+            batch_p, batch_a, batch_keys = batch_data
             padding_mask = None
         else:
-            batch_p, batch_a, padding_mask = batch_data
+            batch_p, batch_a, padding_mask, batch_keys = batch_data
             padding_mask = padding_mask.to(args.device)
         # aa B, S, H (individual) or B, H (collective)
         # property item B, S, H
