@@ -107,13 +107,17 @@ class DataProvider:
         # i = 0
         for item in tqdm(self.overview):
             # i += 1
-            # if i > 3:
-            #     break
+            # if i < 800:
+            #     continue
             time0 = time.time()
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
             property_head, property_tail = self._generate_property(property_info)
-            protein_path = item["Protein_Paths"][0]
-            protein_path = os.path.join(self.data_dir, protein_path)
+            if len(item["Protein_Paths"]) > 0:
+                protein_path = item["Protein_Paths"][0]
+                protein_path = os.path.join(self.data_dir, protein_path)
+            else:
+                print(f"Warning, there is no protein file of {item["Genome Accession"]}")
+                continue
 
             # 检验文件是否存在
             if not os.path.exists(protein_path):
