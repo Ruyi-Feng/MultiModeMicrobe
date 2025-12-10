@@ -226,35 +226,29 @@ class RetrievalValidator:
                     if k >= self.top_k:
                         continue
                     index_k = self.get_true_index(i, self.protein_index[batch_key])
+                    if index_k is None:
+                        continue
                     protein_id = f['protein_id'][index_k]
                     top_k_protein_id.update({k: protein_id.decode('utf-8')})
             batch_top_k_protein_id.update({batch_key: top_k_protein_id})
         return batch_top_k_protein_id
 
     def get_true_index(self, rank_k: int, protein_index: list):
-        """
-        rank_k 是一个索引，protein_index是列表
-        protein_index:
-        [[0], [1], [2], [3, 4], [5, 6], [7], ...]
-        目的是找到rank_k在protein_index中的真实索引。
-        比如rank_k 0, 在protein_index中第0个列表中, 所以返回0
-        rank_k 4, 在protein_index中第3个列表中, 所以返回3
-        rank_k 7, 在protein_index中第5个列表中, 所以返回5
-        """
-        if rank_k < len(protein_index):
-            if rank_k in protein_index[rank_k]:
-                return rank_k
+            if rank_k < len(protein_index):
+                if rank_k in protein_index[rank_k]:
+                    return rank_k
+                else:
+                    for i in range(1, rank_k + 1):
+                        current_idx = rank_k - i
+                        if rank_k in protein_index[current_idx]:
+                            return current_idx
+                    return None
             else:
-                for i in range(rank_k):
-                    if rank_k in protein_index[rank_k - i]:
-                        return rank_k - i
+                for i in range(len(protein_index)):
+                    idx = len(protein_index) - 1 - i
+                    if rank_k in protein_index[idx]:
+                        return idx
                 return None
-        else:
-            for i in range(len(protein_index)):
-                if rank_k in protein_index[-1 - i]:
-                    return len(protein_index) - 1 - i
-            return None
-
 
     def run(self):
         """
