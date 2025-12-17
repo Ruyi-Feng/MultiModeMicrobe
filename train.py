@@ -426,7 +426,7 @@ def main():
         # 在每个epoch结束后更新学习率，而不是在开始
         scheduler.step()
 
-        save_name = os.path.join(args.save_path, "checkpoint.pth.tar")
+        save_name = os.path.join(args.save_path, f"checkpoint_{epoch+1}.pth.tar")
         save_checkpoint(
             {
                 "epoch": epoch + 1,
