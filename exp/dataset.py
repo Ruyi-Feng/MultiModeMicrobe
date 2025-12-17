@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import os
 import h5py
+import random
 
 
 class IndividualDataset(Dataset):
@@ -97,6 +98,30 @@ class CollectiveDataset(Dataset):
 
     def __len__(self):
         return self.dataset_length
+
+
+class MediaDataset(IndividualDataset):
+    def __init__(self, args, **kwargs):
+        super(MediaDataset, self).__init__(args, **kwargs)
+        self.media_dict = load_json(os.path.join(self.data_path, "media_dict.json"))
+        """
+        medic_dict: {
+            "bacdive_id": [file_path1, file_path2, ...]
+        }
+        """
+
+    def _get_media_md(self, media_file_paths):
+        media_path = os.path.join(self.data_path, random.choice(media_file_paths))
+        # 构造 Markdown 文件的路径
+        with open(media_path, 'r', encoding='utf-8') as f:
+            target_output_string = f.read()
+        return target_output_string
+
+    def __getitem__(self, index: int):
+        description, aa_representation, key = super(MediaDataset, self).__getitem__(index)
+        media_file_paths = self.media_dict[key]
+        media_md = self._get_media_md(media_file_paths)
+        return description, aa_representation, key, media_md
 
 
 class BinaryDataLoader:
