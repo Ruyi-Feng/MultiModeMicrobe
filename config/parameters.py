@@ -67,10 +67,16 @@ def train_args():
     parser.add_argument('--max_grad_norm', type=float, default=1.0, help='Gradient clipping norm')
     parser.add_argument('--warmup_epochs', type=int, default=2, help='Number of warmup epochs for learning rate')
 
-    # decoder parameters (暂时没有这一部分)
+    # decoder parameters (LoRA参数加在这里，是否使用，使用后rank，alpha，dropout)
+    parser.add_argument('--decoder_model_name', type=str, default='Qwen/Qwen2.5-3B-Instruct')
     parser.add_argument('--freeze_llm_decoder', action='store_true', default=False)
+    parser.add_argument('--use_lora_decoder', action='store_true', default=False)
+    parser.add_argument('--lora_rank_decoder', type=int, default=16)
+    parser.add_argument('--lora_alpha_decoder', type=int, default=32)
+    parser.add_argument('--lora_dropout_decoder', type=float, default=0.05)
 
     parser.add_argument('--use_yml', type=str, default=None)
+
 
     args = parser.parse_args()
 

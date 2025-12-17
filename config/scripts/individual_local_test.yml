@@ -1,0 +1,49 @@
+mark: decoder_finetune_local_test
+
+# overall train parameters
+device: cuda
+index_path: C:\Users\User\WorkSpace\data\Zhiling\aaseq_microbe\individual_methano\index.txt
+protein_index_path: C:\Users\User\WorkSpace\data\Zhiling\aaseq_microbe\individual_methano\protein_index.json
+data_path: C:\Users\User\WorkSpace\data\Zhiling\aaseq_microbe\individual_methano\
+resume: ./checkpoints/checkpoint.pth.tar
+save_path: ./checkpoints/
+batch_size: 6
+lr: 0.00003
+weight_decay: 0.000001
+start_epoch: 0
+epoch: 1
+print_freq: 2
+
+# data provider parameters
+model_name: esm2_t33_650M_UR50D
+cut_off: 512
+max_seq_len: 512
+
+# aa encoder parameters
+freeze_aa_encoder: True
+aa_encoder_type: attention_convergence
+aa_repr_dim: 480
+aa_encoder_hidden_dim: 128
+
+# property encoder parameters
+freeze_property_encoder: True
+use_lora: True
+property_attn: True
+lora_r: 16
+lora_alpha: 16
+property_model_path: Qwen/Qwen-1_8B
+
+# backbone parameters
+cross_hidden_size: 256
+
+# training stability parameters
+max_grad_norm: 1.0
+warmup_epochs: 2
+
+# decoder parameters
+decoder_model_name: Qwen/Qwen2.5-0.5B-Instruct
+use_lora_decoder: True
+lora_rank_decoder: 16
+lora_alpha_decoder: 32
+lora_dropout_decoder: 0.05
+

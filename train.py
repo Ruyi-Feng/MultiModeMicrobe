@@ -113,7 +113,8 @@ def load_train_data(args):
     train_loader = DataLoader(train_data,
                               batch_size=args.batch_size,
                               shuffle=True,
-                              collate_fn=collate_fn)
+                              collate_fn=collate_fn,
+                              drop_last=True)
     return train_loader
 
 def property_converter(property_seq, property_tokenizer, device="cuda"):
@@ -332,6 +333,7 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
         pred = model(
             batch_a,
             batch_p,
+            padding_mask=padding_mask,
             property_cls_token_index=cls_index_p,
             return_hidden_states=False
             )
@@ -424,7 +426,7 @@ def main():
         # 在每个epoch结束后更新学习率，而不是在开始
         scheduler.step()
 
-        save_name = os.path.join(args.save_path, "checkpoint.pth.tar")
+        save_name = os.path.join(args.save_path, f"checkpoint_{epoch+1}.pth.tar")
         save_checkpoint(
             {
                 "epoch": epoch + 1,
