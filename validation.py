@@ -285,7 +285,7 @@ class RetrievalValidator:
                 )
 
                 aa_weights = out["aa_weights"]
-                top_k_protein_ids = self.get_importance_score(aa_weights, batch_keys, if_visualize=True)
+                top_k_protein_ids = self.get_importance_score(aa_weights, batch_keys, if_visualize=False)
 
                 # 收集 normalized features (on CPU to save GPU memory)
                 all_aa_feats.append(out["aa_representation"].cpu())
