@@ -1,7 +1,7 @@
 
 from Bio import SeqIO
 from exp.data_provider import ESM2Representation, DataProvider
-from exp.dataset import CollectiveDataset, IndividualDataset
+from exp.dataset import CollectiveDataset, IndividualDataset, MediaDataset
 from config import data_provider_args, train_args
 from torch.utils.data import DataLoader
 import os
@@ -63,4 +63,15 @@ def test_individual_data_loader():
     for description, aa_repr, key in dataloader:
         print("property description: ",description)
         print("protein repr: ", aa_repr.shape)
+        break
+
+
+def test_media_data_loader():
+    args = train_args()
+    dataset = MediaDataset(args)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+    for description, aa_repr, key, media_md in dataloader:
+        print("property description: ",description)
+        print("protein repr: ", aa_repr.shape)
+        print("media md: ", media_md)
         break

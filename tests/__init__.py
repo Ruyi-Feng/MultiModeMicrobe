@@ -8,3 +8,4 @@ from .test_data import test_aa_provider
 from .test_data import test_data_provider
 from .test_data import test_collective_data_loader
 from .test_data import test_individual_data_loader
+from .test_data import test_media_data_loader
