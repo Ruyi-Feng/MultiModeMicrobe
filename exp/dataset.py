@@ -111,6 +111,8 @@ class MediaDataset(IndividualDataset):
         """
 
     def _get_media_md(self, media_file_paths):
+        if len(media_file_paths) == 0:
+            return ""
         media_path = os.path.join(self.data_path, random.choice(media_file_paths))
         # 构造 Markdown 文件的路径
         with open(media_path, 'r', encoding='utf-8') as f:
