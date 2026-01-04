@@ -1,4 +1,4 @@
-
+import os
 import torch
 from config.parameters import train_args
 from train import load_model, load_train_data
@@ -77,6 +77,3 @@ def main():
         except Exception as e:
             print(f"Error loading {path}: {e}")
 
-import os
-if __name__ == "__main__":
-    main()
