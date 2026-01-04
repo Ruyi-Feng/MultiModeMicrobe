@@ -11,7 +11,7 @@ from config import train_args
 from exp.dataset import IndividualDataset, CollectiveDataset
 from utils.json_loader import load_json, save_json
 from utils.tools import compute_topk_accuracy
-from train import (
+from exp.train import (
     collate_fn_individual,
     property_converter,
     load_model,
@@ -386,6 +386,3 @@ def main():
     # 运行 retrieval 验证
     validator = RetrievalValidator(args, model, property_tokenizer, val_loader, logger)
     validator.run()
-
-if __name__ == "__main__":
-    main()
