@@ -1,7 +1,7 @@
 import os
 import torch
 from config.parameters import train_args
-from train import load_model, load_train_data
+from exp.train import load_model, load_train_data
 
 
 def check_convergence(args, base_model, model, batch_data):
@@ -55,12 +55,11 @@ def main():
     # 加载用于对比的 model 结构
     model, _ = load_model(args)
 
-    target_checkpoint_paths = [
-        {"epoch 5": "./checkpoints/checkpoint_5.pth.tar"},
-        {"epoch 10": "./checkpoints/checkpoint_10.pth.tar"},
-        {"epoch 15": "./checkpoints/checkpoint_15.pth.tar"},
-        {"epoch 20": "./checkpoints/archaea_checkpoint_20.pth.tar"},
-    ]
+    target_checkpoint_paths = {
+        "epoch 5": "./checkpoints/checkpoint_5.pth.tar",
+        "epoch 10": "./checkpoints/checkpoint_10.pth.tar",
+        "epoch 15": "./checkpoints/checkpoint_15.pth.tar",
+        "epoch 20": "./checkpoints/archaea_checkpoint_20.pth.tar"}
 
     print("Checking Convergence...")
     for name, path in target_checkpoint_paths.items():
