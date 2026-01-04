@@ -165,6 +165,3 @@ def main():
     inference(args, clip_model, decoder_model, media_loader, logger)
     
     logger.info("推理完成")
-
-if __name__ == "__main__":
-    main()
