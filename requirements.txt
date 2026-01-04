@@ -12,7 +12,7 @@ accelerate>=0.20.0
 fair-esm==2.0.0  # ESM protein language model
 
 # Data processing
-numpy>=1.21.0
+numpy>=2.0
 h5py>=3.7.0
 
 # Configuration and utilities
