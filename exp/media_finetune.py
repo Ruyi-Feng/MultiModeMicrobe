@@ -257,7 +257,7 @@ def load_decoder(args, logger):
         lora_alpha=args.lora_alpha_decoder,
         lora_dropout=args.lora_dropout_decoder
     )
-    decoder_model = load_decoder_checkpoint(args, decoder_model, logger)
+    load_decoder_checkpoint(args, decoder_model, logger)
     decoder_model.to(args.device)
     logger.info(f"Decoder model initialized with input dim {args.cross_hidden_size}")
     return decoder_model
