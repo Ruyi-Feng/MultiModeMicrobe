@@ -236,22 +236,20 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, epoch, logge
         if i % args.print_freq == 0:
             progress.display(i, logger)
 
-def load_networks(args, logger):
+def load_encoder(args, logger):
     if not args.resume:
         logger.warning("No --resume checkpoint provided for MicrobeCLIP! Random weights will be used (Not Recommended).")
-    
+
     clip_model, _ = load_model(args)
     if args.resume and os.path.isfile(args.resume):
         logger.info(f"Loading MicrobeCLIP from {args.resume}")
         checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         clip_model.load_state_dict(checkpoint['state_dict'], strict=False) # strict=False 以防版本差异
-    
-    clip_model.to(args.device)
-    # 冻结 MicrobeCLIP
-    for param in clip_model.parameters():
-        param.requires_grad = False
-    clip_model.eval()
 
+    clip_model.to(args.device)
+    return clip_model
+
+def load_decoder(args, logger):
     decoder_model = MediaDecoder(
         qwen_model_path=args.decoder_model_name, # 可以改为参数传入
         input_vector_dim=args.cross_hidden_size,
@@ -259,9 +257,43 @@ def load_networks(args, logger):
         lora_alpha=args.lora_alpha_decoder,
         lora_dropout=args.lora_dropout_decoder
     )
+    decoder_model = load_decoder_checkpoint(args, decoder_model, logger)
     decoder_model.to(args.device)
     logger.info(f"Decoder model initialized with input dim {args.cross_hidden_size}")
-    return clip_model, decoder_model
+    return decoder_model
+
+def load_decoder_checkpoint(args, decoder_model, logger):
+    """
+    加载 decoder 的 checkpoint
+    """
+    if not hasattr(args, 'decoder_checkpoint') or not args.decoder_checkpoint:
+        logger.warning("未提供 decoder checkpoint，使用随机初始化的权重")
+        return
+
+    checkpoint_path = args.decoder_checkpoint
+    if not os.path.isfile(checkpoint_path):
+        logger.warning(f"Checkpoint 文件不存在: {checkpoint_path}，使用原始模型权重")
+        return
+
+    logger.info(f"加载 Decoder checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+    if 'state_dict' in checkpoint:
+        decoder_model.load_state_dict(checkpoint['state_dict'], strict=False)
+        logger.info(f"从 checkpoint 加载 state_dict (epoch: {checkpoint.get('epoch', 'unknown')})")
+    else:
+        decoder_model.load_state_dict(checkpoint, strict=False)
+        logger.info("从 checkpoint 加载 state_dict")
+
+
+def load_networks(args, logger):
+
+    encoder_model = load_encoder(args, logger)
+
+    decoder_model = load_decoder(args, logger)
+
+    return encoder_model, decoder_model
+
 
 def main():
     args = train_args()
@@ -273,9 +305,9 @@ def main():
 
     logger.info("Loading Media Dataset...")
     dataset = MediaDataset(args)
-    
+
     collate_fn = partial(collate_fn_media, tokenizer=decoder_model.tokenizer)
-    
+
     train_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
