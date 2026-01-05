@@ -45,21 +45,13 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
             # 【注意】虽然我们做特征提取，但因为基础模型是 CausalLM，
             # 设为 CAUSAL_LM 可以避免 PEFT 报 mismatch 错误。
             # 我们只需要在训练逻辑中忽略 lm_head 的输出即可。
-            task_type=TaskType.CAUSAL_LM, 
+            task_type=TaskType.CAUSAL_LM,
         )
 
         property_encoder = get_peft_model(property_encoder, lora_config)
 
-        # --- 关键：解决不收敛与显存问题 ---
-        use_gradient_checkpointing = True
-
-        if use_gradient_checkpointing:
-            if hasattr(property_encoder, 'gradient_checkpointing_enable'):
-                property_encoder.gradient_checkpointing_enable()
-
-                # 【核心】必须禁用 KV Cache，否则梯度断裂
-                property_encoder.config.use_cache = False
-                print("已启用梯度检查点 (use_cache=False)")
+        property_encoder.gradient_checkpointing_enable()
+        property_encoder.config.use_cache = False
 
         if hasattr(property_encoder, 'enable_input_require_grads'):
             property_encoder.enable_input_require_grads()
