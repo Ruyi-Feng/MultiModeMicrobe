@@ -326,10 +326,17 @@ def main():
         train_epoch(args, clip_model, decoder_model, train_loader, optimizer, epoch, logger)
 
         # Save Checkpoint
-        save_path = os.path.join(args.save_path, f"finetune_epoch_{epoch+1}.pth")
+        dec_save_path = os.path.join(args.save_path, f"finetune_decoder_epoch_{epoch+1}.pth")
         torch.save({
             'epoch': epoch + 1,
             'state_dict': decoder_model.state_dict(),
             'optimizer': optimizer.state_dict(),
-        }, save_path)
-        logger.info(f"Saved checkpoint to {save_path}")
+        }, dec_save_path)
+        if not args.freeze_aa_encoder:
+            enc_save_path = os.path.join(args.save_path, f"finetune_encoder_epoch_{epoch+1}.pth")
+            torch.save({
+                'epoch': epoch + 1,
+                'state_dict': clip_model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }, enc_save_path)
+        logger.info(f"Saved checkpoint to {dec_save_path}")
