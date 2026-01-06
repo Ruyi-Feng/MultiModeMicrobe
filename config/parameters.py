@@ -74,6 +74,8 @@ def train_args():
     parser.add_argument('--lora_rank_decoder', type=int, default=16)
     parser.add_argument('--lora_alpha_decoder', type=int, default=32)
     parser.add_argument('--lora_dropout_decoder', type=float, default=0.05)
+    parser.add_argument('--decoder_checkpoint', type=str, default=None)
+    parser.add_argument('--recipe_loss_weight', type=float, default=0.05)
 
     parser.add_argument('--use_yml', type=str, default=None)
 

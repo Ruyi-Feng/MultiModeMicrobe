@@ -4,9 +4,11 @@ import logging
 import argparse
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from functools import partial
 from datetime import datetime
+from torch.optim.lr_scheduler import LambdaLR
 
 from utils.media_match import parse_medium_recipe, calculate_recipe_loss
 from config import train_args
@@ -119,7 +121,19 @@ def init_finetune_optimizer(args, model):
         weight_decay=0.0 # Default, overridden by groups
     )
 
-    return optimizer
+    # 添加学习率调度器（warmup + cosine annealing）
+    warmup_epochs = getattr(args, 'warmup_epochs', 2)
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            # Warmup: 线性增长
+            return (epoch + 1) / warmup_epochs
+        else:
+            # Cosine annealing: 从1.0衰减到0.01
+            progress = (epoch - warmup_epochs) / max(args.epoch - warmup_epochs, 1)
+            return 0.01 + 0.99 * (1 + np.cos(np.pi * progress)) / 2
+
+    scheduler = LambdaLR(optimizer, lr_lambda)
+    return optimizer, scheduler
 
 def collate_fn_media(batch, tokenizer):
     """
@@ -181,14 +195,15 @@ def collate_fn_media(batch, tokenizer):
     
     return batch_aa, target_ids, attention_mask, list(media_mds)
 
-def get_media_loss(outputs, target_ids, media_mds, tokenizer):
+def get_media_loss(outputs, target_ids, media_mds, tokenizer, recipe_loss_weight=0.1):
     """
     计算media loss，包括output loss和recipe loss
     :param outputs: 模型输出，包含loss和logits
     :param target_ids: 目标token ids [batch_size, seq_len]
     :param media_mds: 真实的markdown文本列表
     :param tokenizer: tokenizer用于解码
-    :return: 总loss (output_loss + recipe_loss)
+    :param recipe_loss_weight: recipe loss的权重，用于平衡两种loss
+    :return: 总loss (output_loss + recipe_loss_weight * recipe_loss)
     """
     
     # 1. 获取output loss（模型的标准语言模型loss）
@@ -248,26 +263,32 @@ def get_media_loss(outputs, target_ids, media_mds, tokenizer):
             pred_dict = parse_medium_recipe(predicted_text)
             gt_dict = parse_medium_recipe(gt_md_text)
             recipe_loss = calculate_recipe_loss(gt_dict, pred_dict)
+            # 限制recipe_loss的最大值，避免过大惩罚
+            recipe_loss = min(recipe_loss, 50.0)  # 设置上限
             recipe_losses.append(recipe_loss)
         except Exception as e:
-            # 如果解析失败，使用一个较大的惩罚值
-            recipe_losses.append(10.0)
+            # 如果解析失败，使用一个合理的惩罚值（降低惩罚）
+            recipe_losses.append(50.0)
     
     # 6. 计算平均recipe loss并转换为tensor
     avg_recipe_loss = sum(recipe_losses) / len(recipe_losses) if recipe_losses else 0.0
-    recipe_loss_tensor = torch.tensor(avg_recipe_loss, device=output_loss.device, dtype=output_loss.dtype)
+    recipe_loss_tensor = torch.tensor(avg_recipe_loss, device=output_loss.device, dtype=output_loss.dtype, requires_grad=False)
     
-    # 7. 最终loss = output loss + recipe loss
-    total_loss = output_loss + recipe_loss_tensor
+    # 7. 最终loss = output loss + recipe_loss_weight * recipe loss
+    # 注意：recipe_loss不可微分，只用于监控，不影响梯度
+    # 但通过权重控制，避免recipe_loss过大掩盖output_loss的变化
+    total_loss = output_loss + recipe_loss_weight * recipe_loss_tensor
     
-    return total_loss
+    return total_loss, output_loss.item(), avg_recipe_loss
 
-def train_epoch(args, clip_model, decoder_model, loader, optimizer, epoch, logger):
+def train_epoch(args, clip_model, decoder_model, loader, optimizer, scheduler, epoch, logger):
     batch_time = AverageMeter("Time", ":6.3f")
     losses = AverageMeter("Loss", ":.4e")
+    output_losses = AverageMeter("OutputLoss", ":.4e")
+    recipe_losses = AverageMeter("RecipeLoss", ":.4e")
     progress = ProgressMeter(
         len(loader),
-        [batch_time, losses],
+        [batch_time, losses, output_losses, recipe_losses],
         prefix="Epoch: [{}]".format(epoch)
     )
 
@@ -297,23 +318,32 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, epoch, logge
         )
 
         # 3. Calculate Loss (output loss + recipe loss)
-        loss = get_media_loss(outputs, target_ids, media_mds, decoder_model.tokenizer)
+        recipe_loss_weight = getattr(args, 'recipe_loss_weight', 0.1)
+        loss, output_loss_val, recipe_loss_val = get_media_loss(
+            outputs, target_ids, media_mds, decoder_model.tokenizer, recipe_loss_weight
+        )
 
-        # 3. Backward
+        # 4. Backward
         optimizer.zero_grad()
         loss.backward()
 
         # Clip grad
-        torch.nn.utils.clip_grad_norm_(decoder_model.parameters(), args.max_grad_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(decoder_model.parameters(), args.max_grad_norm)
 
         optimizer.step()
 
         losses.update(loss.item(), batch_aa.size(0))
+        output_losses.update(output_loss_val, batch_aa.size(0))
+        recipe_losses.update(recipe_loss_val, batch_aa.size(0))
         batch_time.update(time.time() - end)
         end = time.time()
         
         if i % args.print_freq == 0:
             progress.display(i, logger)
+            # 添加调试信息
+            current_lr = optimizer.param_groups[0]['lr']
+            logger.info(f"  Grad norm: {grad_norm:.4f}, LR: {current_lr:.2e}, "
+                       f"Output Loss: {output_loss_val:.4f}, Recipe Loss: {recipe_loss_val:.4f}")
 
 def load_encoder(args, logger):
     if not args.resume:
@@ -397,12 +427,26 @@ def main():
     )
 
     # 使用专门的优化器初始化函数
-    optimizer = init_finetune_optimizer(args, decoder_model)
+    optimizer, scheduler = init_finetune_optimizer(args, decoder_model)
+    
+    # 记录训练配置
+    recipe_loss_weight = getattr(args, 'recipe_loss_weight', 0.1)
+    logger.info(f"Recipe loss weight: {recipe_loss_weight}")
+    logger.info(f"Learning rate: {args.lr}")
+    logger.info(f"LoRA LR multiplier: {getattr(args, 'lora_lr_multiplier', 10.0)}")
+    logger.info(f"Warmup epochs: {getattr(args, 'warmup_epochs', 2)}")
 
     # 5. Training Loop
     logger.info("Start Training...")
     for epoch in range(args.start_epoch, args.epoch):
-        train_epoch(args, clip_model, decoder_model, train_loader, optimizer, epoch, logger)
+        # 记录当前学习率
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f"Epoch {epoch+1}/{args.epoch}, Current LR: {current_lr:.2e}")
+        
+        train_epoch(args, clip_model, decoder_model, train_loader, optimizer, scheduler, epoch, logger)
+        
+        # 更新学习率
+        scheduler.step()
 
         # Save Checkpoint
         dec_save_path = os.path.join(args.save_path, f"finetune_decoder_epoch_{epoch+1}.pth")
