@@ -47,3 +47,7 @@ lora_rank_decoder: 16
 lora_alpha_decoder: 32
 lora_dropout_decoder: 0.05
 decoder_checkpoint: ./checkpoints/finetune_epoch_1.pth
+
+# media finetune specific parameters
+recipe_loss_weight: 0.07
+lora_lr_multiplier: 2.0
