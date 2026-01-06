@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from functools import partial
 from datetime import datetime
 
+from utils.media_match import parse_medium_recipe, calculate_recipe_loss
 from config import train_args
 from exp.dataset import MediaDataset
 from model.media_decoder import MediaDecoder
@@ -18,21 +19,21 @@ def setup_logger(args):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_filename = f"finetune_{args.mark}_{timestamp}.log"
     log_filepath = os.path.join(args.save_path, log_filename)
-    
+
     logger = logging.getLogger('finetune')
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
-    
+
     file_handler = logging.FileHandler(log_filepath, encoding='utf-8')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(file_handler)
-    
+
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(console_handler)
-    
+
     return logger
 
 def init_finetune_optimizer(args, model):
@@ -51,18 +52,18 @@ def init_finetune_optimizer(args, model):
     other_decay_params = []
     other_no_decay_params = []
     no_decay = ["bias", "LayerNorm.weight", "layernorm"]
-    
+
     trainable_params_count = 0
-    
+
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        
+
         trainable_params_count += 1
-        
+
         is_lora = 'lora_' in name.lower()
         has_no_decay = any(nd in name for nd in no_decay)
-        
+
         if is_lora:
             if has_no_decay:
                 lora_no_decay_params.append(param)
@@ -178,7 +179,88 @@ def collate_fn_media(batch, tokenizer):
     target_ids = tokenized.input_ids
     attention_mask = tokenized.attention_mask # 用于 Decoder 的 mask (虽然 Qwen 可能主要看 labels)
     
-    return batch_aa, target_ids, attention_mask
+    return batch_aa, target_ids, attention_mask, list(media_mds)
+
+def get_media_loss(outputs, target_ids, media_mds, tokenizer):
+    """
+    计算media loss，包括output loss和recipe loss
+    :param outputs: 模型输出，包含loss和logits
+    :param target_ids: 目标token ids [batch_size, seq_len]
+    :param media_mds: 真实的markdown文本列表
+    :param tokenizer: tokenizer用于解码
+    :return: 总loss (output_loss + recipe_loss)
+    """
+    
+    # 1. 获取output loss（模型的标准语言模型loss）
+    output_loss = outputs.loss
+
+    # 获取预测的token ids（argmax）
+    pred_token_ids = torch.argmax(outputs.logits, dim=-1)  # [batch_size, seq_len]
+
+    batch_size = pred_token_ids.shape[0]
+    target_len = target_ids.shape[1]
+
+    total_seq_len = outputs.logits.shape[1]
+    target_start_idx = max(0, total_seq_len - target_len)
+
+    if target_start_idx >= total_seq_len:
+        pred_target_ids = pred_token_ids
+    else:
+        pred_target_ids = pred_token_ids[:, target_start_idx:]  # [batch_size, target_len]
+
+    recipe_losses = []
+
+    for i in range(batch_size):
+        # 解码预测的token ids
+        pred_ids = pred_target_ids[i]
+        # 移除padding tokens和EOS tokens
+        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        eos_token_id = tokenizer.eos_token_id
+        
+        # 找到第一个EOS token的位置，只保留EOS之前的部分
+        eos_positions = (pred_ids == eos_token_id).nonzero(as_tuple=True)[0]
+        if len(eos_positions) > 0:
+            # 取第一个EOS之前的部分
+            valid_length = eos_positions[0].item()
+            valid_pred_ids = pred_ids[:valid_length]
+        else:
+            # 如果没有EOS，移除padding tokens
+            valid_pred_ids = pred_ids[pred_ids != pad_token_id]
+        
+        if len(valid_pred_ids) > 0:
+            pred_text = tokenizer.decode(valid_pred_ids, skip_special_tokens=False)
+        else:
+            pred_text = ""
+        
+        # 提取assistant回复部分（参考media_inference的方式）
+        if "<|im_start|>assistant\n" in pred_text:
+            predicted_text = pred_text.split("<|im_start|>assistant\n")[-1]
+            # 移除可能的结束标记
+            predicted_text = predicted_text.replace("<|im_end|>", "").strip()
+        else:
+            predicted_text = pred_text.strip()
+        
+        # 获取真实的md text
+        gt_md_text = media_mds[i]
+        
+        # 5. 解析成dict并计算recipe loss
+        try:
+            pred_dict = parse_medium_recipe(predicted_text)
+            gt_dict = parse_medium_recipe(gt_md_text)
+            recipe_loss = calculate_recipe_loss(gt_dict, pred_dict)
+            recipe_losses.append(recipe_loss)
+        except Exception as e:
+            # 如果解析失败，使用一个较大的惩罚值
+            recipe_losses.append(10.0)
+    
+    # 6. 计算平均recipe loss并转换为tensor
+    avg_recipe_loss = sum(recipe_losses) / len(recipe_losses) if recipe_losses else 0.0
+    recipe_loss_tensor = torch.tensor(avg_recipe_loss, device=output_loss.device, dtype=output_loss.dtype)
+    
+    # 7. 最终loss = output loss + recipe loss
+    total_loss = output_loss + recipe_loss_tensor
+    
+    return total_loss
 
 def train_epoch(args, clip_model, decoder_model, loader, optimizer, epoch, logger):
     batch_time = AverageMeter("Time", ":6.3f")
@@ -188,47 +270,44 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, epoch, logge
         [batch_time, losses],
         prefix="Epoch: [{}]".format(epoch)
     )
-    
+
     decoder_model.train()
-    clip_model.eval() # 始终 Eval
-    
+    if args.freeze_aa_encoder:
+        clip_model.eval()
+    else:
+        clip_model.train()
+
     end = time.time()
-    
-    for i, (batch_aa, target_ids, attention_mask) in enumerate(loader):
+
+    for i, (batch_aa, target_ids, _, media_mds) in enumerate(loader):
         batch_aa = batch_aa.to(args.device)
         target_ids = target_ids.to(args.device)
-        # attention_mask = attention_mask.to(args.device)
-        
+
         # 1. Extract Microbe Features
         with torch.no_grad():
-            # MicrobeCLIP forward
-            # 构造 padding_mask for aa
-            # aa_repr: [B, S, D]
-            # padding_mask: [B, S] (True for valid)
             padding_mask = (batch_aa.abs().sum(dim=-1) > 0)
-            
-            # 使用 _forward_aa 接口
             aa_embedding, _ = clip_model._forward_aa(batch_aa, padding_mask=padding_mask)
-            
+
             input_vectors = aa_embedding # [B, Dim]
-            
+
         # 2. Decoder Forward
         outputs = decoder_model(
             input_vectors=input_vectors,
             target_token_ids=target_ids
         )
-        
-        loss = outputs.loss
-        
+
+        # 3. Calculate Loss (output loss + recipe loss)
+        loss = get_media_loss(outputs, target_ids, media_mds, decoder_model.tokenizer)
+
         # 3. Backward
         optimizer.zero_grad()
         loss.backward()
-        
+
         # Clip grad
         torch.nn.utils.clip_grad_norm_(decoder_model.parameters(), args.max_grad_norm)
-        
+
         optimizer.step()
-        
+
         losses.update(loss.item(), batch_aa.size(0))
         batch_time.update(time.time() - end)
         end = time.time()
