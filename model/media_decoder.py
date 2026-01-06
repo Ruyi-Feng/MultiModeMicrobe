@@ -4,16 +4,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model, LoraConfig, TaskType
 
 class MediaDecoder(nn.Module):
-    def __init__(self, 
-                 qwen_model_path="Qwen/Qwen2.5-3B-Instruct", 
+    def __init__(self,
+                 qwen_model_path="Qwen/Qwen2.5-3B-Instruct",
                  input_vector_dim=1280,
                  lora_rank=16,
                  lora_alpha=32,
                  lora_dropout=0.05):
         super().__init__()
-        
-        # 1. 加载 Tokenizer 和 Model
-        # Trust_remote_code=True 对于 Qwen 是必要的
+
         print(f"Loading Qwen2.5 from {qwen_model_path}...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             qwen_model_path, 
@@ -22,7 +20,7 @@ class MediaDecoder(nn.Module):
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            
+
         # 加载基础模型
         self.llm = AutoModelForCausalLM.from_pretrained(
             qwen_model_path,
@@ -30,19 +28,14 @@ class MediaDecoder(nn.Module):
             device_map="auto",
             trust_remote_code=True
         )
-        
-        # 3. LoRA 配置 (参考 property_encoder 的逻辑)
-        # 启用梯度检查点以节省显存 (Gradient Checkpointing)
-        # 必须禁用 KV Cache，否则在训练时会报错或梯度断裂
+
         self.llm.gradient_checkpointing_enable()
-        self.llm.config.use_cache = False 
-        
-        # 启用输入梯度 (对于 LoRA + Gradient Checkpointing 通常是必须的)
+        self.llm.config.use_cache = False
+
         if hasattr(self.llm, "enable_input_require_grads"):
              self.llm.enable_input_require_grads()
-        
-        # 2. 配置并应用 LoRA
-        # Qwen2.5 的 target_modules 通常包括所有线性层
+
+        # 配置并应用 LoRA
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             inference_mode=False,
@@ -54,18 +47,15 @@ class MediaDecoder(nn.Module):
         self.llm = get_peft_model(self.llm, peft_config)
         self.llm.print_trainable_parameters()
 
-        # 3. 定义 Projector (Input Embed Dim -> LLM Hidden Dim)
-        # 获取 LLM 的 hidden size (Qwen2.5-3B 通常是 2560)
-        # 注意：经过 PEFT 包装后，配置通常还在 self.llm.config 或 self.llm.base_model.model.config
         self.qwen_dim = self.llm.config.hidden_size
-        
+
         self.projector = nn.Sequential(
             nn.Linear(input_vector_dim, self.qwen_dim * 2),
             nn.GELU(),
             nn.Linear(self.qwen_dim * 2, self.qwen_dim)
         ).to(dtype=torch.bfloat16) # 确保 projector 精度一致
-        
-        # 4. 定义 Prompt 模板部分
+
+        # 定义 Prompt 模板部分
         # 结构: [System Prompt] [User Start] [Vector] [User End] [Assistant Start]
         self.system_prompt = "<|im_start|>system\nYou are a biochemical assistant. You decode protein-based embeddings (ESM-2) into precise microbial culture media recipes.<|im_end|>\n"
         self.user_prompt_start = "<|im_start|>user\n"

@@ -58,12 +58,12 @@ def inference(args, clip_model, decoder_model, media_loader, logger):
     with torch.no_grad():
         for idx, (batch_aa, keys, media_mds) in enumerate(media_loader):
             batch_aa = batch_aa.to(args.device)
-            
+
             # 1. Extract Microbe Features
             padding_mask = (batch_aa.abs().sum(dim=-1) > 0)
             aa_embedding, _ = clip_model._forward_aa(batch_aa, padding_mask=padding_mask)
             input_vectors = aa_embedding  # [B, Dim]
-            
+
             # 2. Generate Text
             generated_ids = decoder_model.generate(
                 input_vectors=input_vectors,
