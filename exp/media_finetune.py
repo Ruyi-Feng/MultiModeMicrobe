@@ -38,9 +38,10 @@ def setup_logger(args):
 
     return logger
 
-def init_finetune_optimizer(args, model):
+def init_finetune_optimizer(args, decoder_model, encoder_model=None):
     """
     初始化优化器，针对 LoRA 参数使用不同的学习率。
+    当 freeze_aa_encoder=False 时，包含 encoder 的参数。
     参考 train.py 的实现。
     """
     # 检查是否使用 LoRA (根据参数名判断)
@@ -53,11 +54,15 @@ def init_finetune_optimizer(args, model):
     lora_no_decay_params = []
     other_decay_params = []
     other_no_decay_params = []
+    encoder_decay_params = []
+    encoder_no_decay_params = []
     no_decay = ["bias", "LayerNorm.weight", "layernorm"]
 
     trainable_params_count = 0
+    encoder_params_count = 0
 
-    for name, param in model.named_parameters():
+    # 处理 decoder 的参数
+    for name, param in decoder_model.named_parameters():
         if not param.requires_grad:
             continue
 
@@ -77,7 +82,26 @@ def init_finetune_optimizer(args, model):
             else:
                 other_decay_params.append(param)
 
+    # 处理 encoder 的参数（当 freeze_aa_encoder=False 时）
+    if encoder_model is not None and not args.freeze_aa_encoder:
+        for name, param in encoder_model.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            trainable_params_count += 1
+            encoder_params_count += 1
+
+            # encoder 参数使用基础学习率
+            has_no_decay = any(nd in name for nd in no_decay)
+            if has_no_decay:
+                encoder_no_decay_params.append(param)
+            else:
+                encoder_decay_params.append(param)
+
     print(f"Total trainable parameters found: {trainable_params_count}")
+    if encoder_params_count > 0:
+        print(f"  - Decoder params: {trainable_params_count - encoder_params_count}")
+        print(f"  - Encoder params: {encoder_params_count}")
     
     param_groups = []
     
@@ -109,9 +133,25 @@ def init_finetune_optimizer(args, model):
             "weight_decay": 0.0
         })
 
+    # Encoder Groups (Base LR, 当 freeze_aa_encoder=False 时)
+    if encoder_decay_params:
+        param_groups.append({
+            "params": encoder_decay_params,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay
+        })
+    if encoder_no_decay_params:
+        param_groups.append({
+            "params": encoder_no_decay_params,
+            "lr": args.lr,
+            "weight_decay": 0.0
+        })
+
     print(f"Optimizer groups:")
     print(f"  LoRA params (LR x{lora_lr_multiplier}): {len(lora_decay_params) + len(lora_no_decay_params)}")
-    print(f"  Other params (Base LR): {len(other_decay_params) + len(other_no_decay_params)}")
+    print(f"  Decoder other params (Base LR): {len(other_decay_params) + len(other_no_decay_params)}")
+    if encoder_params_count > 0:
+        print(f"  Encoder params (Base LR): {len(encoder_decay_params) + len(encoder_no_decay_params)}")
 
     optimizer = torch.optim.AdamW(
         param_groups,
@@ -305,11 +345,10 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, scheduler, e
         target_ids = target_ids.to(args.device)
 
         # 1. Extract Microbe Features
-        with torch.no_grad():
-            padding_mask = (batch_aa.abs().sum(dim=-1) > 0)
-            aa_embedding, _ = clip_model._forward_aa(batch_aa, padding_mask=padding_mask)
+        padding_mask = (batch_aa.abs().sum(dim=-1) > 0)
+        aa_embedding, _ = clip_model._forward_aa(batch_aa, padding_mask=padding_mask)
 
-            input_vectors = aa_embedding # [B, Dim]
+        input_vectors = aa_embedding # [B, Dim]
 
         # 2. Decoder Forward
         outputs = decoder_model(
@@ -327,8 +366,17 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, scheduler, e
         optimizer.zero_grad()
         loss.backward()
 
-        # Clip grad
-        grad_norm = torch.nn.utils.clip_grad_norm_(decoder_model.parameters(), args.max_grad_norm)
+        # Clip grad - 包含所有需要训练的参数
+        if args.freeze_aa_encoder:
+            # 只裁剪 decoder 的梯度
+            grad_norm = torch.nn.utils.clip_grad_norm_(decoder_model.parameters(), args.max_grad_norm)
+        else:
+            # 裁剪 decoder 和 encoder 的梯度
+            all_params = list(decoder_model.parameters())
+            # 只包含需要梯度的 encoder 参数
+            encoder_params = [p for p in clip_model.parameters() if p.requires_grad]
+            all_params.extend(encoder_params)
+            grad_norm = torch.nn.utils.clip_grad_norm_(all_params, args.max_grad_norm)
 
         optimizer.step()
 
@@ -337,7 +385,7 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, scheduler, e
         recipe_losses.update(recipe_loss_val, batch_aa.size(0))
         batch_time.update(time.time() - end)
         end = time.time()
-        
+
         if i % args.print_freq == 0:
             progress.display(i, logger)
             # 添加调试信息
@@ -354,6 +402,24 @@ def load_encoder(args, logger):
         logger.info(f"Loading MicrobeCLIP from {args.resume}")
         checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         clip_model.load_state_dict(checkpoint['state_dict'], strict=False) # strict=False 以防版本差异
+
+    # 确保根据 freeze_aa_encoder 设置 aa_encoder 相关参数的 requires_grad
+    # load_model 应该已经设置了，但为了确保正确性，这里再次明确设置
+    aa_encoder_params_count = 0
+    for name, param in clip_model.named_parameters():
+        if 'aa_encoder' in name or '_aa_proj' in name:
+            param.requires_grad = not args.freeze_aa_encoder
+            aa_encoder_params_count += 1
+    
+    if args.freeze_aa_encoder:
+        logger.info(f"AA Encoder parameters frozen: {aa_encoder_params_count} parameters (requires_grad=False)")
+    else:
+        logger.info(f"AA Encoder parameters unfrozen: {aa_encoder_params_count} parameters (requires_grad=True)")
+    
+    # 统计所有参数状态（用于日志）
+    total_trainable = sum(1 for p in clip_model.parameters() if p.requires_grad)
+    total_params = sum(1 for p in clip_model.parameters())
+    logger.info(f"Total encoder model parameters: {total_trainable}/{total_params} trainable")
 
     clip_model.to(args.device)
     return clip_model
@@ -427,7 +493,8 @@ def main():
     )
 
     # 使用专门的优化器初始化函数
-    optimizer, scheduler = init_finetune_optimizer(args, decoder_model)
+    # 当 freeze_aa_encoder=False 时，包含 encoder 的参数
+    optimizer, scheduler = init_finetune_optimizer(args, decoder_model, encoder_model=clip_model)
     
     # 记录训练配置
     recipe_loss_weight = getattr(args, 'recipe_loss_weight', 0.1)
@@ -435,6 +502,12 @@ def main():
     logger.info(f"Learning rate: {args.lr}")
     logger.info(f"LoRA LR multiplier: {getattr(args, 'lora_lr_multiplier', 10.0)}")
     logger.info(f"Warmup epochs: {getattr(args, 'warmup_epochs', 2)}")
+    logger.info(f"Freeze AA Encoder: {args.freeze_aa_encoder}")
+    
+    # 验证 encoder 的训练状态
+    encoder_trainable = sum(1 for p in clip_model.parameters() if p.requires_grad)
+    encoder_total = sum(1 for p in clip_model.parameters())
+    logger.info(f"Encoder parameters: {encoder_trainable}/{encoder_total} trainable")
 
     # 5. Training Loop
     logger.info("Start Training...")
