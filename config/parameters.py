@@ -9,6 +9,8 @@ def data_provider_args():
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--cut_off', type=int, default=512)
     parser.add_argument('--collective', action='store_true', default=False)
+    parser.add_argument('--tag', type=str, default='normal', help="normal, pH, temperature, salinity, oxygen")
+    parser.add_argument('--split_data', type=str, default='train', help="train, test")
     args = parser.parse_args()
     return args
 

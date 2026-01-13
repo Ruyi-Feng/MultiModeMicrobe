@@ -44,6 +44,9 @@ class DataProvider:
         self.save_path = save_path
         self.no_exist_path = []
         args = data_provider_args()
+        self.tag = args.tag
+        self.split_data = args.split_data
+        print(f"Will select data with tag: {self.tag}, split: {self.split_data}")
         self.save_collective_representation = args.collective
         self._init_data()
         self.aa_rep_extractor = ESM2Representation(args)
@@ -56,7 +59,7 @@ class DataProvider:
         overview = os.path.join(data_dir, "microbex_data_with_protein.json")
         self.overview = load_json(overview)
 
-        self.valid_property_keys = get_included_property()
+        self.valid_property_keys = get_included_property(self.tag)
         self.data_length = len(self.overview)
         self._generate()
 
@@ -103,21 +106,41 @@ class DataProvider:
             idx_s = "{:s},{:d},{:d},{:d}\n".format(bacdive_id, property_head, property_tail, aa_index).encode()
             self.index_f.write(idx_s)
 
+    def _valid_item(self, item):
+        if self.tag == "normal":
+            if len(item["Protein_Paths"]) == 0:
+                print(f"Warning, there is no protein file of {item["Genome Accession"]}")
+            return len(item["Protein_Paths"]) > 0
+        if self.tag == "pH":
+            valid_tag = item["use_ph"]
+            valid_split = (item["ph_role"] == self.split_data)
+            return valid_tag and valid_split
+        if self.tag == "temperature":
+            valid_tag = item["use_temperature"]
+            valid_split = (item["temperature_role"] == self.split_data)
+            return valid_tag and valid_split
+        if self.tag == "salinity":
+            valid_tag = item["use_nacl"]
+            valid_split = (item["nacl_role"] == self.split_data)
+            return valid_tag and valid_split
+        if self.tag == "oxygen":
+            valid_tag = item["use_oxygen"]
+            valid_split = (item["oxygen_role"] == self.split_data)
+            return valid_tag and valid_split
+
     def _generate(self):
         # i = 0
         for item in tqdm(self.overview):
+            if not self._valid_item(item):
+                continue
             # i += 1
             # if i < 800:
             #     continue
             time0 = time.time()
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
             property_head, property_tail = self._generate_property(property_info)
-            if len(item["Protein_Paths"]) > 0:
-                protein_path = item["Protein_Paths"][0]
-                protein_path = os.path.join(self.data_dir, protein_path)
-            else:
-                print(f"Warning, there is no protein file of {item["Genome Accession"]}")
-                continue
+            protein_path = item["Protein_Paths"][0]
+            protein_path = os.path.join(self.data_dir, protein_path)
 
             # 检验文件是否存在
             if not os.path.exists(protein_path):
