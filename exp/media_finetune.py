@@ -357,7 +357,7 @@ def train_epoch(args, clip_model, decoder_model, loader, optimizer, scheduler, e
         )
 
         # 3. Calculate Loss (output loss + recipe loss)
-        recipe_loss_weight = getattr(args, 'recipe_loss_weight', 0.1)
+        recipe_loss_weight = args.recipe_loss_weight
         loss, output_loss_val, recipe_loss_val = get_media_loss(
             outputs, target_ids, media_mds, decoder_model.tokenizer, recipe_loss_weight
         )
