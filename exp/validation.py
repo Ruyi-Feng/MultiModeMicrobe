@@ -13,7 +13,7 @@ from utils.json_loader import load_json, save_json
 from utils.tools import compute_topk_accuracy
 from exp.train import (
     collate_fn_individual,
-    property_converter,
+    llm_property_converter,
     load_model,
     clip_accuracy,
     AverageMeter,
@@ -105,7 +105,7 @@ def validate(args, model, tokenizer_p, loader, logger):
                 padding_mask = padding_mask.to(args.device)
 
             batch_a = batch_a.to(args.device)
-            batch_p, cls_index_p = property_converter(batch_p, tokenizer_p, args.device)
+            batch_p, cls_index_p = llm_property_converter(batch_p, tokenizer_p, args.device)
 
             pred = model(
                 batch_a,
@@ -272,7 +272,7 @@ class RetrievalValidator:
                     padding_mask = padding_mask.to(self.args.device)
 
                 batch_a = batch_a.to(self.args.device)
-                batch_p, cls_index_p = property_converter(batch_p, self.tokenizer_p, self.args.device)
+                batch_p, cls_index_p = llm_property_converter(batch_p, self.tokenizer_p, self.args.device)
 
                 # Get embeddings
                 out = self.model(
