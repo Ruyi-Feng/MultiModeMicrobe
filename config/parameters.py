@@ -47,9 +47,17 @@ def train_args():
     parser.add_argument('--aa_encoder_type', type=str, default="cross_attention_fusion")
 
     # property encoder parameters
+    parser.add_argument('--use_llm_property', action='store_true', default=False)
+
+    # --- llm property encoder settings ---
+    parser.add_argument('--property_model_name', type=str, default="Qwen/Qwen-1_8B")
     parser.add_argument('--freeze_property_encoder', action='store_true', default=False)
     parser.add_argument('--property_model_path', type=str, default="Qwen/Qwen-1_8B")
     parser.add_argument('--property_attn', action='store_true', default=False)
+
+    # --- numerical property encoder settings ---
+    parser.add_argument('--property_dim', type=int, default=4)
+    parser.add_argument('--property_hidden_dim', type=int, default=64)
 
     # LoRA parameters for property encoder
     parser.add_argument('--use_lora', action='store_true', default=False, help='Use LoRA for property encoder')

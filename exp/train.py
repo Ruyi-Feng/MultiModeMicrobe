@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 from exp.dataset import IndividualDataset, CollectiveDataset
 from model import MicrobeCLIP, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
-from model.property_encoder import get_property_encoder
+from model.property_encoder import get_llm_property_encoder, llm_property_converter, get_numerical_property_encoder
 from utils.tools import get_optimizer_params, compute_topk_accuracy
 from config import train_args
 
@@ -117,21 +117,6 @@ def load_train_data(args):
                               drop_last=True)
     return train_loader
 
-def property_converter(property_seq, property_tokenizer, device="cuda"):
-    seq_with_cls = ["<|im_start|> " + seq + "<|endoftext|>" for seq in property_seq]
-    property_seq = property_tokenizer(
-        seq_with_cls,
-        return_tensors='pt',            # 返回 PyTorch tensor
-        padding=True,                   # 自动 padding 到最长序列
-        truncation=True,                # 超长截断
-        max_length=512                  # 可选
-    )
-
-    property_seq = {k: v.to(device) for k, v in property_seq.items()}
-    tail_index =  (property_seq['attention_mask'].sum(1) - 1)
-
-    return property_seq, tail_index
-
 def resume(args, model, optimizer, logger):
     # optionally resume from a checkpoint
     if args.resume:
@@ -157,23 +142,30 @@ def load_model(args):
         'property_encoder': (not args.freeze_property_encoder),
         'llm_decoder': (not args.freeze_llm_decoder),
                  }
+    if args.use_llm_property:
     # 添加 LoRA 参数支持
-    property_encoder, property_tokenizer = get_property_encoder(
-        args.property_model_path,
-        args.device,
-        use_lora=getattr(args, 'use_lora', False),
-        lora_r=getattr(args, 'lora_r', 64),
-        lora_alpha=getattr(args, 'lora_alpha', 16),
-        lora_dropout=getattr(args, 'lora_dropout', 0.05),
-        lora_target_modules=getattr(args, 'lora_target_modules', None)
-    )
+        property_encoder, property_tokenizer = get_llm_property_encoder(
+            args.property_model_path,
+            args.device,
+            use_lora=getattr(args, 'use_lora', False),
+            lora_r=getattr(args, 'lora_r', 64),
+            lora_alpha=getattr(args, 'lora_alpha', 16),
+            lora_dropout=getattr(args, 'lora_dropout', 0.05),
+            lora_target_modules=getattr(args, 'lora_target_modules', None)
+        )
+    else:
+        property_encoder, property_tokenizer = get_numerical_property_encoder(
+            args.property_dim,
+            args.property_embedding_dim
+        )
     if args.collective:
         backbone = MicrobeCLIP(property_encoder,
                                trainable=trainable,
                                collective=args.collective,
                                cross_hidden_size=args.cross_hidden_size,
                                aa_representation_dim=args.aa_repr_dim,
-                               property_attn=args.property_attn
+                               property_attn=args.property_attn,
+                               llm_property=args.use_llm_property
                                )
     else:
         if args.aa_encoder_type == "microbe_protein_repr":
@@ -192,7 +184,10 @@ def load_model(args):
                                aa_encoder=aa_encoder,
                                collective=args.collective,
                                cross_hidden_size=args.cross_hidden_size,
-                               aa_representation_dim=args.aa_repr_dim)
+                               aa_representation_dim=args.aa_repr_dim,
+                               property_attn=args.property_attn,
+                               llm_property=args.use_llm_property
+                               )
     return backbone, property_tokenizer
 
 def init_optimizer(args, model):
@@ -328,15 +323,25 @@ def train(args, model, tokenizer_p, loader, optimizer, epoch, logger):
         # property item B, S, H
 
         batch_a = batch_a.to(args.device)
-        batch_p, cls_index_p = property_converter(batch_p, tokenizer_p, args.device)
+        if args.use_llm_property:
+            batch_p, cls_index_p = llm_property_converter(batch_p, tokenizer_p, args.device)
 
-        pred = model(
-            batch_a,
-            batch_p,
-            padding_mask=padding_mask,
-            property_cls_token_index=cls_index_p,
-            return_hidden_states=False
-            )
+            pred = model(
+                batch_a,
+                batch_p,
+                padding_mask=padding_mask,
+                property_cls_token_index=cls_index_p,
+                return_hidden_states=False
+                )
+        else:
+            batch_p = tokenizer_p(batch_p, args.device)
+
+            pred = model(
+                batch_a,
+                batch_p,
+                padding_mask=padding_mask,
+                return_hidden_states=False
+                )
 
         logits_a = pred["logits_aa"]
         logits_p = pred["logits_property"]

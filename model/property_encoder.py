@@ -1,8 +1,14 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model, TaskType
+from sklearn.preprocessing import MinMaxScaler
+import json
+import numpy as np
+import torch
+import torch.nn as nn
 
 
-def get_property_encoder(model_path="Qwen/Qwen-1_8B",
+# ====================用Qwen做description的property encoder====================
+def get_llm_property_encoder(model_path="Qwen/Qwen-1_8B",
                          device="cuda",
                          pad_token="<|endoftext|>",
                          use_lora=False,
@@ -62,3 +68,88 @@ def get_property_encoder(model_path="Qwen/Qwen-1_8B",
         print("=" * 50)
 
     return property_encoder, property_tokenizer
+
+def llm_property_converter(property_seq, property_tokenizer, device="cuda"):
+    seq_with_cls = ["<|im_start|> " + seq + "<|endoftext|>" for seq in property_seq]
+    property_seq = property_tokenizer(
+        seq_with_cls,
+        return_tensors='pt',            # 返回 PyTorch tensor
+        padding=True,                   # 自动 padding 到最长序列
+        truncation=True,                # 超长截断
+        max_length=512                  # 可选
+    )
+
+    property_seq = {k: v.to(device) for k, v in property_seq.items()}
+    tail_index = (property_seq['attention_mask'].sum(1) - 1)
+
+    return property_seq, tail_index
+
+# ================直接提取property的数值进入encoder===============
+def get_numerical_property_encoder(property_dim,
+                                   property_embedding_dim,
+                                   device="cuda"):
+    encoder = StrainEmbeddingGenerator(input_dim=property_dim, embedding_dim=property_embedding_dim)
+    encoder.to(device)
+    tokenizer = numerical_property_tokenizer
+
+    return encoder, tokenizer
+
+def numerical_property_tokenizer(property_seqs: list[str], device="cuda"):
+    batch_vec = []
+    for property_seq in property_seqs:
+        property_seq = json.loads(property_seq)
+        emb_vec = standardize_strain_features(property_seq)
+        batch_vec.append(emb_vec)
+    batch_vec = torch.tensor(batch_vec).to(device)
+    return batch_vec  # [batch_size, 4]
+
+def oxygen_tolerance_to_numeric(oxygen_type: str) -> float:
+    """将氧气耐受度分类转为数值"""
+    oxygen_map = {
+        "anaerobic": 0.0,          # 厌氧
+        "facultative anaerobic": 1.0,  # 兼性厌氧
+        "aerobic": 2.0             # 好氧
+    }
+    return oxygen_map.get(oxygen_type.lower(), 1.0)  # 默认兼性厌氧
+
+def standardize_strain_features(strain_feature: dict) -> np.ndarray:
+    """标准化菌株特征为4维向量（0-1范围）"""
+    # 1. 提取并转换原始特征
+    ph = strain_feature["pHOpt."]
+    salt = strain_feature["naclopt."]
+    oxygen = oxygen_tolerance_to_numeric(strain_feature["Oxygen Tolerance"])
+    temp = strain_feature["Topt."]
+    
+    # 2. 定义各特征的合理取值范围（适配绝大多数菌株）
+    scalers = {
+        "ph": MinMaxScaler(feature_range=(0, 1)).fit([[1], [14]]),  # pH 1-14
+        "salt": MinMaxScaler(feature_range=(0, 1)).fit([[0], [30]]), # 盐分 0-30%
+        "oxygen": MinMaxScaler(feature_range=(0, 1)).fit([[0], [2]]),# 氧气 0-2
+        "temp": MinMaxScaler(feature_range=(0, 1)).fit([[0], [100]]) # 温度 0-100℃
+    }
+    
+    # 3. 标准化每个特征
+    ph_norm = scalers["ph"].transform([[ph]])[0][0]
+    salt_norm = scalers["salt"].transform([[salt]])[0][0]
+    oxygen_norm = scalers["oxygen"].transform([[oxygen]])[0][0]
+    temp_norm = scalers["temp"].transform([[temp]])[0][0]
+    
+    # 4. 返回4维标准化特征
+    return np.array([ph_norm, salt_norm, oxygen_norm, temp_norm], dtype=np.float32)
+
+
+class StrainEmbeddingGenerator(nn.Module):
+    """可选：将4维特征扩展为固定高维embedding（如64维，适配深度学习）"""
+    def __init__(self, input_dim=4, embedding_dim=64):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.embedding_layer = nn.Sequential(
+            nn.Linear(input_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, embedding_dim),
+            nn.LayerNorm(embedding_dim)  # 归一化，提升稳定性
+        )
+    
+    def forward(self, x):
+        """输入：4维标准化特征（tensor），输出：embedding_dim维embedding"""
+        return self.embedding_layer(x)

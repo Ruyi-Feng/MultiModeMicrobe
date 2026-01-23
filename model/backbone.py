@@ -20,11 +20,13 @@ class MicrobeCLIP(nn.Module):
                  collective: bool = True,
                  cross_hidden_size: int = 128,
                  aa_representation_dim: int = 128,
-                 property_attn: bool = False):
+                 property_attn: bool = False,
+                 llm_property: bool = True):
         super(MicrobeCLIP, self).__init__()
 
         self.collective = collective
         self.property_attn = property_attn
+        self.llm_property = llm_property
 
         self._init_aa_net(aa_encoder, trainable, aa_representation_dim, cross_hidden_size)
         self._init_property_net(property_encoder, trainable, cross_hidden_size)
@@ -39,6 +41,14 @@ class MicrobeCLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def _init_property_net(self, property_encoder, trainable, cross_hidden_size):
+        # numerical encoder
+        if not self.llm_property:
+            self.property_encoder = property_encoder
+            self._property_proj = nn.Linear(property_encoder.embedding_dim, cross_hidden_size, bias=False)
+            nn.init.xavier_uniform_(self.property_encoder.weight, gain=1.0)
+            nn.init.xavier_uniform_(self._property_proj.weight, gain=1.0)
+            return
+        # descriptor encoder
         # 检测是否使用 LoRA：检查参数名中是否有 'lora_'
         is_lora = any('lora_' in name for name, _ in property_encoder.named_parameters())
 
@@ -83,7 +93,7 @@ class MicrobeCLIP(nn.Module):
             nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
 
 
-    def _forward_property(self, property_seq, property_cls_token_index=None):
+    def _forward_llm_property(self, property_seq, property_cls_token_index=None):
         property_embedding = self.property_encoder(**property_seq, output_hidden_states=True, output_attentions=False, return_dict=True)
         property_embedding = property_embedding.hidden_states[-1].float()
         property_embedding = self._property_proj(property_embedding)   # 这里还是有seq len在的。所以还是要加cls token来做全局表征。
@@ -100,6 +110,12 @@ class MicrobeCLIP(nn.Module):
                                                  need_weights=False,
                                                  average_attn_weights=True)  # 如果需要分开每个头，这里false
         return property_embedding, property_cls_token.squeeze(1)
+
+    def _forward_numerical_property(self, property_seq):
+        # property_seq: [batch_size, 4]
+        property_embedding = self.property_encoder(property_seq)
+        property_embedding = self._property_proj(property_embedding)
+        return property_embedding
 
     def _forward_aa(self, aa_rep, padding_mask=None, return_weights=False):
         if self.collective:
@@ -129,10 +145,13 @@ class MicrobeCLIP(nn.Module):
     def forward(self, aa_seq, property_seq, property_cls_token_index=None, return_hidden_states=False, padding_mask=None, return_weights=False):
 
         aa_embedding, aa_weights = self._forward_aa(aa_seq, padding_mask=padding_mask, return_weights=return_weights)
-        _, property_cls_token = self._forward_property(property_seq, property_cls_token_index)
-
         aa_embedding = aa_embedding / aa_embedding.norm(dim=1, keepdim=True)
-        property_cls_token = property_cls_token / property_cls_token.norm(dim=1, keepdim=True)
+
+        if self.llm_property:
+            _, property_cls_token = self._forward_llm_property(property_seq, property_cls_token_index)
+            property_cls_token = property_cls_token / property_cls_token.norm(dim=1, keepdim=True)
+        else:
+            property_cls_token = self._forward_numerical_property(property_seq)
 
         # 约束logit_scale在合理范围内，防止数值不稳定
         logit_scale = torch.clamp(self.logit_scale, -np.log(100), np.log(100)).exp()
