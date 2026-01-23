@@ -94,10 +94,12 @@ def get_numerical_property_encoder(property_dim,
 
     return encoder, tokenizer
 
-def numerical_property_tokenizer(property_seqs: list[str], device="cuda"):
+def numerical_property_tokenizer(property_seqs: list, device="cuda"):
     batch_vec = []
     for property_seq in property_seqs:
-        property_seq = json.loads(property_seq)
+        if property_seq.endswith("\n"):
+            property_seq = property_seq[:-1]
+        property_seq = eval(property_seq)
         emb_vec = standardize_strain_features(property_seq)
         batch_vec.append(emb_vec)
     batch_vec = torch.tensor(batch_vec).to(device)
@@ -105,6 +107,8 @@ def numerical_property_tokenizer(property_seqs: list[str], device="cuda"):
 
 def oxygen_tolerance_to_numeric(oxygen_type: str) -> float:
     """将氧气耐受度分类转为数值"""
+    if oxygen_type is None:
+        return 1.0
     oxygen_map = {
         "anaerobic": 0.0,          # 厌氧
         "facultative anaerobic": 1.0,  # 兼性厌氧
@@ -113,6 +117,7 @@ def oxygen_tolerance_to_numeric(oxygen_type: str) -> float:
     return oxygen_map.get(oxygen_type.lower(), 1.0)  # 默认兼性厌氧
 
 def standardize_strain_features(strain_feature: dict) -> np.ndarray:
+    # 这里需要增加如何处理none值
     """标准化菌株特征为4维向量（0-1范围）"""
     # 1. 提取并转换原始特征
     ph = strain_feature["pHOpt."]
@@ -133,7 +138,16 @@ def standardize_strain_features(strain_feature: dict) -> np.ndarray:
     salt_norm = scalers["salt"].transform([[salt]])[0][0]
     oxygen_norm = scalers["oxygen"].transform([[oxygen]])[0][0]
     temp_norm = scalers["temp"].transform([[temp]])[0][0]
-    
+
+    if np.isnan(ph_norm):
+        ph_norm = -1
+    if np.isnan(salt_norm):
+        salt_norm = -1
+    if np.isnan(oxygen_norm):
+        oxygen_norm = -1
+    if np.isnan(temp_norm):
+        temp_norm = -1
+
     # 4. 返回4维标准化特征
     return np.array([ph_norm, salt_norm, oxygen_norm, temp_norm], dtype=np.float32)
 

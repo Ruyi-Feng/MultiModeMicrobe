@@ -148,7 +148,7 @@ class TxtDataLoader(BinaryDataLoader):
         super(TxtDataLoader, self).__init__(data_path)
 
     def data_converter(self, info):
-        return "<|im_start|> " + info.decode()
+        return info.decode()
 
 
 class AaDataLoader:

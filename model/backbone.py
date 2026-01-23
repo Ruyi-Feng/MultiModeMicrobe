@@ -45,7 +45,11 @@ class MicrobeCLIP(nn.Module):
         if not self.llm_property:
             self.property_encoder = property_encoder
             self._property_proj = nn.Linear(property_encoder.embedding_dim, cross_hidden_size, bias=False)
-            nn.init.xavier_uniform_(self.property_encoder.weight, gain=1.0)
+            for module in self.property_encoder.embedding_layer.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight, gain=1.0)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
             nn.init.xavier_uniform_(self._property_proj.weight, gain=1.0)
             return
         # descriptor encoder
