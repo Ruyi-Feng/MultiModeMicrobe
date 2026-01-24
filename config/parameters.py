@@ -7,7 +7,7 @@ def data_provider_args():
     parser.add_argument('--model_name', type=str, default='esm2_t12_35M_UR50D')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--batch_size', type=int, default=2)
-    parser.add_argument('--cut_off', type=int, default=512)
+    parser.add_argument('--cut_off', type=int, default=1024)
     parser.add_argument('--collective', action='store_true', default=False)
     parser.add_argument('--tag', type=str, default='normal', help="normal, pH, temperature, salinity, oxygen")
     parser.add_argument('--split_data', type=str, default='train', help="train, test")
@@ -87,7 +87,7 @@ def train_args():
     parser.add_argument('--decoder_checkpoint', type=str, default=None)
     parser.add_argument('--recipe_loss_weight', type=float, default=0.05)
 
-    parser.add_argument('--use_yml', type=str, default=None)
+    parser.add_argument('--use_yml', type=str, default='./config/scripts/individual_local_test.yml')
 
 
     args = parser.parse_args()
