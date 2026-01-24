@@ -94,4 +94,19 @@ def get_included_property(tag="normal"):
 
             "Oxygen Tolerance",
         }
+    if tag == "opt3d":
+        keys = {
+            "Domain",
+            "Phylum",
+            "Class",
+            "Order",
+            "Family",
+            "Genus",
+            "Species",
+            "Strain",
+            "pHOpt.",
+            "Topt.",
+            "naclopt.",
+
+        }
     return keys
