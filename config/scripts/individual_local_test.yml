@@ -13,6 +13,7 @@ weight_decay: 0.000001
 start_epoch: 0
 epoch: 3
 print_freq: 2
+tag: opt3d
 
 # data provider parameters
 model_name: esm2_t33_650M_UR50D
@@ -28,7 +29,7 @@ aa_encoder_hidden_dim: 128
 # property encoder parameters
 use_llm_property: False
 freeze_property_encoder: False
-property_dim: 4
+property_dim: 3
 property_embedding_dim: 128
 # use_lora: True
 # property_attn: True
