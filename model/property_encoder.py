@@ -116,15 +116,24 @@ def oxygen_tolerance_to_numeric(oxygen_type: str) -> float:
     }
     return oxygen_map.get(oxygen_type.lower(), 1.0)  # 默认兼性厌氧
 
+def extract_property_number(strain_feature: dict) -> dict:
+    ph = strain_feature["culture_pH_optimum"]
+    temp = strain_feature["culture_temp_optimum"]
+    nacl = strain_feature["NaCl_optimum"]
+
+    # 1. 提取并转换原始特征
+    # ph = strain_feature["pHOpt."]
+    # salt = strain_feature["naclopt."]
+    # oxygen = oxygen_tolerance_to_numeric(strain_feature["Oxygen Tolerance"])
+    # temp = strain_feature["Topt."]
+
+    return ph, temp, nacl
+
 def standardize_strain_features(strain_feature: dict) -> np.ndarray:
     # 这里需要增加如何处理none值
     """标准化菌株特征为4维向量（0-1范围）"""
-    # 1. 提取并转换原始特征
-    ph = strain_feature["pHOpt."]
-    salt = strain_feature["naclopt."]
-    oxygen = oxygen_tolerance_to_numeric(strain_feature["Oxygen Tolerance"])
-    temp = strain_feature["Topt."]
-    
+    # ------------------------==============这里的字段变了，并且里面是字符串，需要把数字提取出来。
+
     # 2. 定义各特征的合理取值范围（适配绝大多数菌株）
     scalers = {
         "ph": MinMaxScaler(feature_range=(0, 1)).fit([[1], [14]]),  # pH 1-14
@@ -132,24 +141,26 @@ def standardize_strain_features(strain_feature: dict) -> np.ndarray:
         "oxygen": MinMaxScaler(feature_range=(0, 1)).fit([[0], [2]]),# 氧气 0-2
         "temp": MinMaxScaler(feature_range=(0, 1)).fit([[0], [100]]) # 温度 0-100℃
     }
-    
+
+    ph, temp, salt = extract_property_number(strain_feature)
     # 3. 标准化每个特征
     ph_norm = scalers["ph"].transform([[ph]])[0][0]
     salt_norm = scalers["salt"].transform([[salt]])[0][0]
-    oxygen_norm = scalers["oxygen"].transform([[oxygen]])[0][0]
+    # oxygen_norm = scalers["oxygen"].transform([[oxygen]])[0][0]
     temp_norm = scalers["temp"].transform([[temp]])[0][0]
 
     if np.isnan(ph_norm):
         ph_norm = -1
     if np.isnan(salt_norm):
         salt_norm = -1
-    if np.isnan(oxygen_norm):
-        oxygen_norm = -1
+    # if np.isnan(oxygen_norm):
+    #     oxygen_norm = -1
     if np.isnan(temp_norm):
         temp_norm = -1
 
     # 4. 返回4维标准化特征
-    return np.array([ph_norm, salt_norm, oxygen_norm, temp_norm], dtype=np.float32)
+    # return np.array([ph_norm, salt_norm, oxygen_norm, temp_norm], dtype=np.float32)
+    return np.array([ph_norm, salt_norm, temp_norm], dtype=np.float32)
 
 
 class StrainEmbeddingGenerator(nn.Module):
@@ -163,7 +174,7 @@ class StrainEmbeddingGenerator(nn.Module):
             nn.Linear(32, embedding_dim),
             nn.LayerNorm(embedding_dim)  # 归一化，提升稳定性
         )
-    
+
     def forward(self, x):
         """输入：4维标准化特征（tensor），输出：embedding_dim维embedding"""
         return self.embedding_layer(x)
