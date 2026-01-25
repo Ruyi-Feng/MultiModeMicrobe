@@ -107,26 +107,40 @@ class DataProvider:
             self.index_f.write(idx_s)
 
     def _valid_item(self, item):
-        if self.tag == "normal":
-            if len(item["Protein_Paths"]) == 0:
-                print(f"Warning, there is no protein file of {item["Genome Accession"]}")
+        if len(item["Protein_Paths"]) == 0:
+            print(f"Warning, there is no protein file of {item["Genome Accession"]}")
             return len(item["Protein_Paths"]) > 0
-        if self.tag == "pH":
-            valid_tag = item["use_ph"]
-            valid_split = (item["ph_role"] == self.split_data)
-            return valid_tag and valid_split
-        if self.tag == "temperature":
-            valid_tag = item["use_temperature"]
-            valid_split = (item["temperature_role"] == self.split_data)
-            return valid_tag and valid_split
-        if self.tag == "salinity":
-            valid_tag = item["use_nacl"]
-            valid_split = (item["nacl_role"] == self.split_data)
-            return valid_tag and valid_split
-        if self.tag == "oxygen":
-            valid_tag = item["use_oxygen"]
-            valid_split = (item["oxygen_role"] == self.split_data)
-            return valid_tag and valid_split
+        # if self.tag == "pH":
+        #     valid_tag = item["use_ph"]
+        #     valid_split = (item["ph_role"] == self.split_data)
+        #     return valid_tag and valid_split
+        # if self.tag == "temperature":
+        #     valid_tag = item["use_temperature"]
+        #     valid_split = (item["temperature_role"] == self.split_data)
+        #     return valid_tag and valid_split
+        # if self.tag == "salinity":
+        #     valid_tag = item["use_nacl"]
+        #     valid_split = (item["nacl_role"] == self.split_data)
+        #     return valid_tag and valid_split
+        # if self.tag == "oxygen":
+        #     valid_tag = item["use_oxygen"]
+        #     valid_split = (item["oxygen_role"] == self.split_data)
+        #     return valid_tag and valid_split
+        return True
+
+    def rm_unit_in_property(self, property_info):
+        if "culture_temp_optimum" in property_info:
+            temp_str = property_info["culture_temp_optimum"]
+            temp_str = temp_str.replace("°C", "")
+            temp_str = temp_str.replace(" ", "")
+            property_info["culture_temp_optimum"] = int(float(temp_str))
+        if "NaCl_optimum" in property_info:
+            nacl_str = property_info["NaCl_optimum"]
+            nacl_str = nacl_str.replace("%", "")
+            nacl_str = nacl_str.replace(" ", "")
+            property_info["NaCl_optimum"] = int(float(nacl_str))
+
+        return property_info
 
     def _generate(self):
         # i = 0
@@ -138,6 +152,7 @@ class DataProvider:
             #     continue
             time0 = time.time()
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
+            property_info = self.rm_unit_in_property(property_info)
             property_head, property_tail = self._generate_property(property_info)
             protein_path = item["Protein_Paths"][0]
             protein_path = os.path.join(self.data_dir, protein_path)
