@@ -98,22 +98,30 @@ def validate(args, model, tokenizer_p, loader, logger):
         for i, batch_data in enumerate(loader):
             # 使用dataloader获取aa和property pairs
             if args.collective:
-                batch_p, batch_a = batch_data
+                batch_p, batch_a, _ = batch_data
                 padding_mask = None
             else:
-                batch_p, batch_a, padding_mask = batch_data
+                batch_p, batch_a, padding_mask, _ = batch_data
                 padding_mask = padding_mask.to(args.device)
 
             batch_a = batch_a.to(args.device)
-            batch_p, cls_index_p = llm_property_converter(batch_p, tokenizer_p, args.device)
-
-            pred = model(
-                batch_a,
-                batch_p,
-                property_cls_token_index=cls_index_p,
-                return_hidden_states=False,
-                padding_mask=padding_mask
-            )
+            if args.use_llm_property:
+                batch_p, cls_index_p = llm_property_converter(batch_p, tokenizer_p, args.device)
+                pred = model(
+                    batch_a,
+                    batch_p,
+                    property_cls_token_index=cls_index_p,
+                    return_hidden_states=False,
+                    padding_mask=padding_mask
+                )
+            else:
+                batch_p = tokenizer_p(batch_p, args.device)
+                pred = model(
+                    batch_a,
+                    batch_p,
+                    return_hidden_states=False,
+                    padding_mask=padding_mask
+                )
 
             logits_a = pred["logits_aa"]
             logits_p = pred["logits_property"]
@@ -272,17 +280,25 @@ class RetrievalValidator:
                     padding_mask = padding_mask.to(self.args.device)
 
                 batch_a = batch_a.to(self.args.device)
-                batch_p, cls_index_p = llm_property_converter(batch_p, self.tokenizer_p, self.args.device)
-
-                # Get embeddings
-                out = self.model(
-                    batch_a,
-                    batch_p,
-                    property_cls_token_index=cls_index_p,
-                    return_hidden_states=True,
-                    padding_mask=padding_mask,
-                    return_weights=True
-                )
+                if self.args.use_llm_property:
+                    batch_p, cls_index_p = llm_property_converter(batch_p, self.tokenizer_p, self.args.device)
+                    out = self.model(
+                        batch_a,
+                        batch_p,
+                        property_cls_token_index=cls_index_p,
+                        return_hidden_states=True,
+                        padding_mask=padding_mask,
+                        return_weights=True
+                    )
+                else:
+                    batch_p = self.tokenizer_p(batch_p, self.args.device)
+                    out = self.model(
+                        batch_a,
+                        batch_p,
+                        return_hidden_states=True,
+                        padding_mask=padding_mask,
+                        return_weights=True
+                    )
 
                 aa_weights = out["aa_weights"]
                 top_k_protein_ids = self.get_importance_score(aa_weights, batch_keys, if_visualize=False)
@@ -360,6 +376,7 @@ def main():
     logger.info(f"  Mark: {args.mark}")
     logger.info(f"  Device: {args.device}")
     logger.info(f"  Batch size: {args.batch_size}")
+    logger.info(f"  Use LLM property: {args.use_llm_property}")
     logger.info(f"  Data path: {args.data_path}")
     logger.info(f"  Index path: {args.index_path}")
     logger.info(f"  Protein index path: {args.protein_index_path}")
