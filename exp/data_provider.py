@@ -9,6 +9,7 @@ import esm
 import h5py
 import numpy as np
 import os
+import shutil
 import time
 import torch
 
@@ -39,9 +40,17 @@ class DataProvider:
     """
 
 
-    def __init__(self, data_dir, save_path, **kwargs):
+    def __init__(self, data_dir, save_path, spare_folders = [], **kwargs):
         self.data_dir = data_dir
         self.save_path = save_path
+        self.spare_folders = self._init_spare_repr(spare_folders)
+        """
+        {
+            "folder1": ["file1.h5", "file2.h5", ...],
+            "folder2": ["file1.h5", "file2.h5", ...],
+            ...
+        }
+        """
         self.no_exist_path = []
         args = data_provider_args()
         self.tag = args.tag
@@ -56,7 +65,7 @@ class DataProvider:
             self.aa_storage = CollectiveFeatureStorage(self.save_path, max_shape=(None, self.aa_rep_extractor.dim))
         else:
             self.protein_index = dict()
-        overview = os.path.join(data_dir, "microbex_data_with_protein.json")
+        overview = os.path.join(data_dir, "microbex_data_with_eggnog.json")
         self.overview = load_json(overview)
 
         self.valid_property_keys = get_included_property(self.tag)
@@ -68,6 +77,13 @@ class DataProvider:
         self.property_head = 0
         self.index_f = open(os.path.join(self.save_path, "index.txt"), 'ab+')
 
+    def _init_spare_repr(self, spare_folders):
+        spare = dict()
+        for folder in spare_folders:
+            data_list = os.listdir(folder)
+            spare[folder] = data_list
+        return spare
+
     def _generate_property(self, property_info):
         head = self.property_head
         property_info = str(property_info) + "\n"
@@ -76,6 +92,40 @@ class DataProvider:
         tail = head + write_len
         self.property_head = tail
         return head, tail
+
+    def _update_protein_index_by_h5(self, folder, bacdive_id):
+        h5_path = os.path.join(folder, bacdive_id + ".h5")
+        with h5py.File(h5_path, "r") as f:
+            protein_id = f["protein_id"]
+            last_item = ""
+            index_list = []
+            for i, item in enumerate(protein_id):
+                if isinstance(item, (bytes, np.bytes_)):
+                    item = item.decode("utf-8")
+                if item == last_item:
+                    index_list[-1].append(i)
+                else:
+                    index_list.append([i])
+                    last_item = item
+        self.protein_index[bacdive_id] = index_list
+        print("resume protein index from: ", bacdive_id)
+
+    def cp_file(self, flnm, folder, save_path):
+        src = os.path.join(folder, flnm)
+        dst = os.path.join(save_path, flnm)
+        shutil.copy2(src, dst)
+        print(f"copy {flnm} from {folder} to {save_path}")
+
+    def _search_current_repr(self, bacdive_id):
+        exist = False
+        for folder in self.spare_folders:
+            flnm = bacdive_id + ".h5"
+            if flnm in self.spare_folders[folder]:
+                exist = True
+                self._update_protein_index_by_h5(folder, bacdive_id)  # 这一步会更新 self.protein_index
+                self.cp_file(flnm, folder, self.save_path)
+                return exist
+        return exist
 
     def _generate_collective_protein_repr(self, protein_path):
         aa_representation = self.aa_rep_extractor.get_collective_representation(protein_path)
@@ -91,6 +141,10 @@ class DataProvider:
         }
         """
         self.protein_index.setdefault(bacdive_id, [])
+        exist = self._search_current_repr(bacdive_id)
+        if exist:
+            return
+
         self.protein_index = self.aa_rep_extractor.get_individual_representation(protein_path=protein_path,
                                                                                  save_path=self.save_path,
                                                                                  max_shape=(None, self.aa_rep_extractor.dim),
@@ -108,7 +162,7 @@ class DataProvider:
 
     def _valid_item(self, item):
         if len(item["Protein_Paths"]) == 0:
-            print(f"Warning, there is no protein file of {item["Genome Accession"]}")
+            print(f"Warning, there is no protein file of {item['Genome Accession']}")
             return len(item["Protein_Paths"]) > 0
         # if self.tag == "pH":
         #     valid_tag = item["use_ph"]
@@ -313,14 +367,14 @@ class ESM2Representation:
         # 每个古菌都用一个单独的h5来存储。
         self.model.eval()
         last_id = None
-        # i = 0
+        i = 0
         aa_storage = IndividualFeatureStorage(save_path, bacdive_id + ".h5", max_shape)
         with torch.no_grad():
             pbar = tqdm(self._load_data_in_batch(protein_path, collective=False))
             for batch_labels, batch_strs, batch_tokens in pbar:
-                # i += 1
-                # if i > 3:
-                #     break
+                i += 1
+                if i > 3:
+                    break
                 t0 = time.time()
                 batch_tokens = batch_tokens.to(self.device)
                 batch_reprs = self._extract_individual_repr(batch_tokens, repr_layers=self.repr_layers_num)   # batch, dim
