@@ -13,15 +13,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader
 
 from exp.train import (
     setup_logger,
     load_train_data,
+    collate_fn_individual,
     AverageMeter,
     ProgressMeter,
     save_checkpoint,
 )
 from config import train_args
+from exp.dataset import IndividualDataset, CollectiveDataset
 from model import MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
 from model.property_encoder import get_numerical_property_encoder
 from utils.tools import get_optimizer_params
@@ -122,7 +125,7 @@ def init_optimizer(args, model):
     return optimizer, scheduler
 
 
-def main():
+def train():
     args = train_args()
 
     # 设置日志记录器
@@ -225,5 +228,145 @@ def main():
     logger.info("E2E Prediction training completed!")
 
 
+def validate():
+    args = train_args()
+    logger = setup_logger(args)
+    logger.info("=" * 80)
+    logger.info("E2E Prediction Validation Configuration:")
+    logger.info(f"  Mark: {args.mark}")
+    logger.info(f"  Device: {args.device}")
+    logger.info(f"  Batch size: {args.batch_size}")
+    logger.info(f"  Learning rate: {args.lr}")
+    logger.info(f"  Weight decay: {args.weight_decay}")
+    logger.info(f"  Start epoch: {args.start_epoch}")
+    logger.info(f"  Total epochs: {args.epoch}")
+    logger.info(f"  AA encoder type: {args.aa_encoder_type}")
+    logger.info(f"  Save path: {args.save_path}")
+    logger.info("=" * 80)
+
+    # 这里的 data 会直接从 config 被替换为验证的 data。
+    # 验证时输出总体 MSE（norm 后）以及反归一化后的三项 MSE。
+    # 给出预测值和真实值的分布情况，三个指标三张图。
+    if args.collective:
+        val_data = CollectiveDataset(args)
+        collate_fn = None
+    else:
+        val_data = IndividualDataset(args)
+        collate_fn = collate_fn_individual
+    val_loader = DataLoader(
+        val_data,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        drop_last=False,
+    )
+
+    _, tokenizer_p = get_numerical_property_encoder(
+        args.property_dim,
+        getattr(args, "property_embedding_dim", 128),
+    )
+
+    aa_encoder = load_aa_encoder(args)
+    hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
+    model = E2EPrediction(aa_encoder, hidden_size=hidden_size).to(args.device)
+
+    if args.resume and os.path.isfile(args.resume):
+        logger.info(f"=> loading checkpoint '{args.resume}'")
+        checkpoint = torch.load(args.resume, weights_only=False, map_location=args.device)
+        model.load_state_dict(checkpoint["state_dict"])
+        logger.info(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint.get('epoch', 'N/A')})")
+    elif args.resume:
+        logger.warning(f"=> no checkpoint found at '{args.resume}'")
+    else:
+        logger.warning("=> args.resume is None, validating with random initialized model")
+
+    batch_time = AverageMeter("Time", ":6.3f")
+    losses = AverageMeter("MSE", ":.4e")
+    progress = ProgressMeter(
+        len(val_loader),
+        [batch_time, losses],
+        prefix="Val: ",
+    )
+
+    all_preds = []
+    all_gts = []
+    model.eval()
+    end = time.time()
+    with torch.no_grad():
+        for i, batch_data in enumerate(val_loader):
+            if args.collective:
+                batch_p, batch_a, batch_keys = batch_data
+                padding_mask = None
+            else:
+                batch_p, batch_a, padding_mask, batch_keys = batch_data
+                padding_mask = padding_mask.to(args.device)
+            batch_a = batch_a.to(args.device)
+
+            pred = model(batch_a, padding_mask=padding_mask)
+            tgt = tokenizer_p(batch_p, args.device)
+            if tgt.size(-1) > 3:
+                tgt = tgt[:, :3]
+
+            loss = model.get_loss(pred, tgt)
+            losses.update(loss.item(), batch_a.size(0))
+
+            all_preds.append(pred.detach().cpu())
+            all_gts.append(tgt.detach().cpu())
+
+            batch_time.update(time.time() - end)
+            end = time.time()
+            if i % args.print_freq == 0:
+                progress.display(i, logger)
+
+    if len(all_preds) == 0:
+        logger.warning("No validation data found.")
+        return
+
+    preds = torch.cat(all_preds, dim=0)
+    gts = torch.cat(all_gts, dim=0)
+    overall_mse = F.mse_loss(preds, gts).item()
+    logger.info(f"Overall MSE (normalized): {overall_mse:.6f}")
+
+    def denorm(x, min_val, max_val):
+        return x * (max_val - min_val) + min_val
+
+    ph_pred = denorm(preds[:, 0], 1.0, 14.0)
+    ph_gt = denorm(gts[:, 0], 1.0, 14.0)
+    salt_pred = denorm(preds[:, 1], 0.0, 30.0)
+    salt_gt = denorm(gts[:, 1], 0.0, 30.0)
+    temp_pred = denorm(preds[:, 2], 0.0, 100.0)
+    temp_gt = denorm(gts[:, 2], 0.0, 100.0)
+
+    mse_ph = F.mse_loss(ph_pred, ph_gt).item()
+    mse_salt = F.mse_loss(salt_pred, salt_gt).item()
+    mse_temp = F.mse_loss(temp_pred, temp_gt).item()
+    logger.info(f"Denorm MSE - pH: {mse_ph:.6f}, salt: {mse_salt:.6f}, temp: {mse_temp:.6f}")
+
+    plot_dir = os.path.join(args.save_path, "e2e_val_plots")
+    os.makedirs(plot_dir, exist_ok=True)
+    try:
+        import matplotlib.pyplot as plt
+
+        def plot_distribution(pred_vals, gt_vals, name, unit):
+            plt.figure(figsize=(6, 4))
+            plt.hist(gt_vals, bins=30, alpha=0.6, label="gt")
+            plt.hist(pred_vals, bins=30, alpha=0.6, label="pred")
+            plt.title(f"{name} distribution")
+            plt.xlabel(unit)
+            plt.ylabel("count")
+            plt.legend()
+            save_path = os.path.join(plot_dir, f"{name.lower()}_dist.png")
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            logger.info(f"Saved distribution plot: {save_path}")
+
+        plot_distribution(ph_pred.numpy(), ph_gt.numpy(), "pH", "pH")
+        plot_distribution(salt_pred.numpy(), salt_gt.numpy(), "Salt", "%")
+        plot_distribution(temp_pred.numpy(), temp_gt.numpy(), "Temp", "C")
+    except Exception as exc:
+        logger.warning(f"Plotting failed: {exc}")
+
+
 if __name__ == "__main__":
-    main()
+    # train()
+    validate()
