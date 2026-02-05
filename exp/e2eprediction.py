@@ -215,12 +215,6 @@ def train():
             prefix="Epoch: [{}]".format(epoch),
         )
 
-        if args.collective:
-            protein_index = None
-        else:
-            protein_index = load_json(args.protein_index_path)
-        all_top_k_protein_ids = {}
-
         model = model.to(args.device)
         model.train()
         end = time.time()
@@ -233,17 +227,6 @@ def train():
             out = model(batch_a, padding_mask=padding_mask)
 
             pred = out["pred"]
-            aa_weights = out.get("aa_weights")
-            if (not args.collective) and (aa_weights is not None):
-                top_k_protein_ids = get_importance_score(
-                    aa_weights,
-                    batch_keys,
-                    args,
-                    protein_index,
-                    top_k=30,
-                    if_visualize=(i == 0),
-                )
-                all_top_k_protein_ids.update(top_k_protein_ids)
 
             tgt = tokenizer_p(batch_p, args.device)
             if tgt.size(-1) > 3:
@@ -280,11 +263,6 @@ def train():
             filename=save_name,
         )
         logger.info(f"Checkpoint saved to {save_name}")
-        if not args.collective:
-            top_k_path = os.path.join(args.save_path, f"e2e_top_k_protein_ids_epoch_{epoch+1}.json")
-            save_json(all_top_k_protein_ids, top_k_path)
-            logger.info(f"Saved top-k protein ids to {top_k_path}")
-
     logger.info("E2E Prediction training completed!")
 
 
@@ -348,6 +326,12 @@ def validate():
         prefix="Val: ",
     )
 
+    if args.collective:
+        protein_index = None
+    else:
+        protein_index = load_json(args.protein_index_path)
+    all_top_k_protein_ids = {}
+
     all_preds = []
     all_gts = []
     model.eval()
@@ -362,7 +346,20 @@ def validate():
                 padding_mask = padding_mask.to(args.device)
             batch_a = batch_a.to(args.device)
 
-            pred = model(batch_a, padding_mask=padding_mask)
+            out = model(batch_a, padding_mask=padding_mask)
+            pred = out["pred"]
+            aa_weights = out.get("aa_weights")
+            if (not args.collective) and (aa_weights is not None):
+                top_k_protein_ids = get_importance_score(
+                    aa_weights,
+                    batch_keys,
+                    args,
+                    protein_index,
+                    top_k=30,
+                    if_visualize=(i == 0),
+                )
+                all_top_k_protein_ids.update(top_k_protein_ids)
+
             tgt = tokenizer_p(batch_p, args.device)
             if tgt.size(-1) > 3:
                 tgt = tgt[:, :3]
@@ -381,6 +378,11 @@ def validate():
     if len(all_preds) == 0:
         logger.warning("No validation data found.")
         return
+
+    if not args.collective:
+        top_k_path = os.path.join(args.save_path, "e2e_top_k_protein_ids.json")
+        save_json(all_top_k_protein_ids, top_k_path)
+        logger.info(f"Saved top-k protein ids to {top_k_path}")
 
     preds = torch.cat(all_preds, dim=0)
     gts = torch.cat(all_gts, dim=0)
