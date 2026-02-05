@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import h5py
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
@@ -25,9 +26,10 @@ from exp.train import (
 )
 from config import train_args
 from exp.dataset import IndividualDataset, CollectiveDataset
-from model import MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
+from model import E2EPrediction, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
 from model.property_encoder import get_numerical_property_encoder
 from utils.tools import get_optimizer_params
+from utils.json_loader import load_json, save_json
 
 
 def load_aa_encoder(args):
@@ -51,56 +53,91 @@ def load_aa_encoder(args):
     return aa_encoder
 
 
-class E2EPrediction(nn.Module):
-    def __init__(self,
-                 aa_encoder,
-                 hidden_size: int = 128
-                 ):
-        super(E2EPrediction, self).__init__()
-        self.hidden_size = hidden_size
-        self.pred_layer = nn.Sequential(
-            nn.Linear(hidden_size, 32),
-            nn.ReLU(),
-            nn.Linear(32, 3),
-        )  # 目标是预测一个dim=3的向量，分别代表[ph_norm, salt_norm, temp_norm]
-        self._init_aa_net(aa_encoder)
+def _visual_weights(aa_weights, keys, save_dir):
+    """
+    把 aa_weights 画成小方格，颜色是重要性。方格随 seq 长度换行。
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import math
 
-    def _init_aa_net(self, aa_encoder):
-        self._aa_proj = nn.Linear(aa_encoder.embed_dim, self.hidden_size, bias=False)
-        nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
-        self.aa_encoder = aa_encoder
-        # microbe_protein_repr 需要 cls token，与 backbone 一致
-        if getattr(aa_encoder, "name", None) == "microbe_protein_repr":
-            self.protein_cls_token = nn.Parameter(
-                torch.randn(1, 1, aa_encoder.embed_dim) * 0.02
-            )
+    os.makedirs(save_dir, exist_ok=True)
 
-    def forward(self, aa_seq, padding_mask=None):
-        # 与 backbone 一致：microbe_protein_repr 先拼 cls token
-        if getattr(self.aa_encoder, "name", None) == "microbe_protein_repr":
-            cls_token = self.protein_cls_token.expand(aa_seq.size(0), -1, -1)
-            aa_seq = torch.cat([cls_token, aa_seq], dim=1)
-            if padding_mask is not None:
-                cls_mask = torch.ones(
-                    aa_seq.size(0), 1,
-                    dtype=padding_mask.dtype,
-                    device=padding_mask.device,
-                )
-                padding_mask = torch.cat([cls_mask, padding_mask], dim=1)
+    if isinstance(aa_weights, torch.Tensor):
+        weights_np = aa_weights.detach().cpu().numpy()
+    else:
+        weights_np = aa_weights
 
-        if getattr(self.aa_encoder, "name", None) == "attention_convergence" and padding_mask is not None:
-            aa_embedding, _ = self.aa_encoder(aa_seq, padding_mask=padding_mask, return_weights=True)
-        else:
-            aa_embedding = self.aa_encoder(aa_seq)
+    for idx, key in enumerate(keys):
+        w = weights_np[idx]
+        nonzero_idx = np.where(w > 1e-8)[0]
+        if len(nonzero_idx) > 0:
+            w = w[:nonzero_idx[-1] + 1]
 
-        aa_embedding = self._aa_proj(aa_embedding)
-        return self.pred_layer(aa_embedding)
+        seq_len = len(w)
+        if seq_len == 0:
+            continue
 
-    def get_loss(self, logits, gts):
-        # gts is 3d tensor [ph_norm, salt_norm, temp_norm]，若为4维则取前3维
-        if gts.size(-1) > 3:
-            gts = gts[:, :3]
-        return F.mse_loss(logits, gts)
+        n_cols = 50
+        n_rows = math.ceil(seq_len / n_cols)
+
+        pad_len = n_rows * n_cols - seq_len
+        w_padded = np.pad(w, (0, pad_len), constant_values=np.nan)
+        w_matrix = w_padded.reshape(n_rows, n_cols)
+
+        plt.figure(figsize=(15, max(2, n_rows * 0.5)))
+        cmap = plt.cm.viridis
+        cmap.set_bad('white')
+        im = plt.imshow(w_matrix, cmap=cmap, aspect='equal')
+        plt.colorbar(im, label='Importance Score', fraction=0.046, pad=0.04)
+        plt.title(f"Protein: {key}")
+        plt.axis('off')
+
+        save_path = os.path.join(save_dir, f"{key}.png")
+        plt.savefig(save_path, bbox_inches='tight', dpi=150)
+        plt.close()
+
+
+def _get_true_index(rank_k: int, protein_index: list):
+    if rank_k < len(protein_index):
+        if rank_k in protein_index[rank_k]:
+            return rank_k
+        for i in range(1, rank_k + 1):
+            current_idx = rank_k - i
+            if rank_k in protein_index[current_idx]:
+                return current_idx
+        return None
+    for i in range(len(protein_index)):
+        idx = len(protein_index) - 1 - i
+        if rank_k in protein_index[idx]:
+            return idx
+    return None
+
+
+def get_importance_score(aa_weights, keys, args, protein_index, top_k=30, if_visualize=False):
+    if args.collective:
+        raise ValueError("Collective mode is not supported for importance score calculation")
+
+    import_rank = aa_weights.argsort(dim=1, descending=False)
+    if if_visualize:
+        save_dir = os.path.join(args.save_path, "visual_weights")
+        _visual_weights(aa_weights, keys, save_dir)
+
+    batch_top_k_protein_id = {}
+    for batch_key, batch_rank_k in zip(keys, import_rank.tolist()):
+        top_k_protein_id = {}
+        h5_path = os.path.join(args.data_path, f"{batch_key}.h5")
+        with h5py.File(h5_path, 'r') as f:
+            for i, k in enumerate(batch_rank_k):
+                if k >= top_k:
+                    continue
+                index_k = _get_true_index(i, protein_index[batch_key])
+                if index_k is None:
+                    continue
+                protein_id = f['protein_id'][index_k]
+                top_k_protein_id.update({k: protein_id.decode('utf-8')})
+        batch_top_k_protein_id.update({batch_key: top_k_protein_id})
+    return batch_top_k_protein_id
 
 
 def init_optimizer(args, model):
@@ -178,6 +215,12 @@ def train():
             prefix="Epoch: [{}]".format(epoch),
         )
 
+        if args.collective:
+            protein_index = None
+        else:
+            protein_index = load_json(args.protein_index_path)
+        all_top_k_protein_ids = {}
+
         model = model.to(args.device)
         model.train()
         end = time.time()
@@ -187,7 +230,20 @@ def train():
             padding_mask = padding_mask.to(args.device)
             batch_a = batch_a.to(args.device)
 
-            pred = model(batch_a, padding_mask=padding_mask)
+            out = model(batch_a, padding_mask=padding_mask)
+
+            pred = out["pred"]
+            aa_weights = out.get("aa_weights")
+            if (not args.collective) and (aa_weights is not None):
+                top_k_protein_ids = get_importance_score(
+                    aa_weights,
+                    batch_keys,
+                    args,
+                    protein_index,
+                    top_k=30,
+                    if_visualize=(i == 0),
+                )
+                all_top_k_protein_ids.update(top_k_protein_ids)
 
             tgt = tokenizer_p(batch_p, args.device)
             if tgt.size(-1) > 3:
@@ -224,6 +280,10 @@ def train():
             filename=save_name,
         )
         logger.info(f"Checkpoint saved to {save_name}")
+        if not args.collective:
+            top_k_path = os.path.join(args.save_path, f"e2e_top_k_protein_ids_epoch_{epoch+1}.json")
+            save_json(all_top_k_protein_ids, top_k_path)
+            logger.info(f"Saved top-k protein ids to {top_k_path}")
 
     logger.info("E2E Prediction training completed!")
 

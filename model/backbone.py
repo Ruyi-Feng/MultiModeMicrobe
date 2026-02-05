@@ -180,6 +180,64 @@ class MicrobeCLIP(nn.Module):
             return pred
 
 
+class E2EPrediction(nn.Module):
+    def __init__(self,
+                 aa_encoder,
+                 hidden_size: int = 128
+                 ):
+        super(E2EPrediction, self).__init__()
+        self.hidden_size = hidden_size
+        self.pred_layer = nn.Sequential(
+            nn.Linear(hidden_size, 32),
+            nn.ReLU(),
+            nn.Linear(32, 3),
+        )  # 目标是预测一个dim=3的向量，分别代表[ph_norm, salt_norm, temp_norm]
+        self._init_aa_net(aa_encoder)
+
+    def _init_aa_net(self, aa_encoder):
+        self._aa_proj = nn.Linear(aa_encoder.embed_dim, self.hidden_size, bias=False)
+        nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
+        self.aa_encoder = aa_encoder
+        # microbe_protein_repr 需要 cls token，与 backbone 一致
+        if getattr(aa_encoder, "name", None) == "microbe_protein_repr":
+            self.protein_cls_token = nn.Parameter(
+                torch.randn(1, 1, aa_encoder.embed_dim) * 0.02
+            )
+
+    def forward(self, aa_seq, padding_mask=None):
+        # 与 backbone 一致：microbe_protein_repr 先拼 cls token
+        if getattr(self.aa_encoder, "name", None) == "microbe_protein_repr":
+            cls_token = self.protein_cls_token.expand(aa_seq.size(0), -1, -1)
+            aa_seq = torch.cat([cls_token, aa_seq], dim=1)
+            if padding_mask is not None:
+                cls_mask = torch.ones(
+                    aa_seq.size(0), 1,
+                    dtype=padding_mask.dtype,
+                    device=padding_mask.device,
+                )
+                padding_mask = torch.cat([cls_mask, padding_mask], dim=1)
+
+        if getattr(self.aa_encoder, "name", None) == "attention_convergence" and padding_mask is not None:
+            aa_embedding, aa_weights = self.aa_encoder(aa_seq, padding_mask=padding_mask, return_weights=True)
+        else:
+            aa_embedding = self.aa_encoder(aa_seq)
+
+        aa_embedding = self._aa_proj(aa_embedding)
+
+        pred = self.pred_layer(aa_embedding)
+        preds = {
+            "pred": pred,
+            "aa_weights": aa_weights
+        }
+        return preds
+
+    def get_loss(self, logits, gts):
+        # gts is 3d tensor [ph_norm, salt_norm, temp_norm]，若为4维则取前3维
+        if gts.size(-1) > 3:
+            gts = gts[:, :3]
+        return F.mse_loss(logits, gts)
+
+
 class GumbalSoftmax(nn.Module):
     def __init__(self, embed_dim):
         super().__init__()
