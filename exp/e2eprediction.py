@@ -411,8 +411,11 @@ def validate():
 
         def plot_distribution(pred_vals, gt_vals, name, unit):
             plt.figure(figsize=(6, 4))
-            plt.hist(gt_vals, bins=30, alpha=0.6, label="gt")
-            plt.hist(pred_vals, bins=30, alpha=0.6, label="pred")
+            # 使用相同的 bins，否则两组直方图柱宽会不一致
+            all_vals = np.concatenate([np.asarray(pred_vals).ravel(), np.asarray(gt_vals).ravel()])
+            bins = np.linspace(all_vals.min(), all_vals.max(), 31)
+            plt.hist(gt_vals, bins=bins, alpha=0.6, label="gt")
+            plt.hist(pred_vals, bins=bins, alpha=0.6, label="pred")
             plt.title(f"{name} distribution")
             plt.xlabel(unit)
             plt.ylabel("count")
