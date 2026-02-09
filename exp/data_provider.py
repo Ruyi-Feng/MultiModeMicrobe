@@ -377,8 +377,6 @@ class ESM2Representation:
             pbar = tqdm(self._load_data_in_batch(protein_path, collective=False))
             for batch_labels, batch_strs, batch_tokens in pbar:
                 i += 1
-                if i > 3:
-                    break
                 t0 = time.time()
                 batch_tokens = batch_tokens.to(self.device)
                 batch_reprs = self._extract_individual_repr(batch_tokens, repr_layers=self.repr_layers_num)   # batch, dim
