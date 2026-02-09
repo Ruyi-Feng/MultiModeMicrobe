@@ -149,6 +149,7 @@ class DataProvider:
         if exist:
             return
 
+        print(f"generate individual representation of {bacdive_id}")
         self.protein_index = self.aa_rep_extractor.get_individual_representation(protein_path=protein_path,
                                                                                  save_path=self.save_path,
                                                                                  max_shape=(None, self.aa_rep_extractor.dim),
