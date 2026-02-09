@@ -92,15 +92,15 @@ def get_numerical_property_encoder(property_dim,
     encoder.to(device)
     tokenizer = numerical_property_tokenizer
 
-    return encoder, tokenizer
+    return encoder, tokenizer   # tokenizer的第1维和seq的维度保持一致
 
-def numerical_property_tokenizer(property_seqs: list, device="cuda"):
+def numerical_property_tokenizer(property_seqs: list, device="cuda", property_list=["ph", "temp", "nacl", "oxygen"]):
     batch_vec = []
     for property_seq in property_seqs:
         if property_seq.endswith("\n"):
             property_seq = property_seq[:-1]
         property_seq = eval(property_seq)
-        emb_vec = standardize_strain_features(property_seq)
+        emb_vec = standardize_strain_features(property_seq, property_list)
         batch_vec.append(emb_vec)
     batch_vec = torch.tensor(batch_vec).to(device)
     return batch_vec  # [batch_size, 4]
@@ -117,50 +117,57 @@ def oxygen_tolerance_to_numeric(oxygen_type: str) -> float:
     return oxygen_map.get(oxygen_type.lower(), 1.0)  # 默认兼性厌氧
 
 def extract_property_number(strain_feature: dict) -> dict:
-    ph = strain_feature["culture_pH_optimum"]
-    temp = strain_feature["culture_temp_optimum"]
-    nacl = strain_feature["NaCl_optimum"]
+    if "culture_pH_optimum" in strain_feature:
+        ph = strain_feature["culture_pH_optimum"]
+    else:
+        ph = None
+    if "culture_temp_optimum" in strain_feature:
+        temp = strain_feature["culture_temp_optimum"]
+    else:
+        temp = None
+    if "NaCl_optimum" in strain_feature:
+        nacl = strain_feature["NaCl_optimum"]
+    else:
+        nacl = None
+    if "Oxygen Tolerance" in strain_feature:
+        oxygen = strain_feature["Oxygen Tolerance"]
+    else:
+        oxygen = None
+    return ph, temp, nacl, oxygen
 
-    # 1. 提取并转换原始特征
-    # ph = strain_feature["pHOpt."]
-    # salt = strain_feature["naclopt."]
-    # oxygen = oxygen_tolerance_to_numeric(strain_feature["Oxygen Tolerance"])
-    # temp = strain_feature["Topt."]
+def standardize_strain_features(strain_feature: dict, property_list=["ph", "temp", "nacl", "oxygen"]) -> np.ndarray:
+    """标准化所需要的菌株特征为0-1范围的向量
 
-    return ph, temp, nacl
+    strain_feature: dict, 菌株特征字典
+    property_list: list, 需要标准化的属性列表
+    return: np.ndarray, 标准化后的菌株特征向量
 
-def standardize_strain_features(strain_feature: dict) -> np.ndarray:
-    # 这里需要增加如何处理none值
-    """标准化菌株特征为4维向量（0-1范围）"""
+    return 维度和property_list的长度一致
+    feature_list[i] = -1 表示该属性不存在
+    feature_list[i] = 0-1 表示该属性存在且标准化后的值
+    """
     # ------------------------==============这里的字段变了，并且里面是字符串，需要把数字提取出来。
 
-    # 2. 定义各特征的合理取值范围（适配绝大多数菌株）
     scalers = {
         "ph": MinMaxScaler(feature_range=(0, 1)).fit([[1], [14]]),  # pH 1-14
-        "salt": MinMaxScaler(feature_range=(0, 1)).fit([[0], [30]]), # 盐分 0-30%
-        "oxygen": MinMaxScaler(feature_range=(0, 1)).fit([[0], [2]]),# 氧气 0-2
-        "temp": MinMaxScaler(feature_range=(0, 1)).fit([[0], [100]]) # 温度 0-100℃
+        "temp": MinMaxScaler(feature_range=(0, 1)).fit([[0], [100]]), # 温度 0-100℃
+        "nacl": MinMaxScaler(feature_range=(0, 1)).fit([[0], [30]]), # 盐分 0-30%
+        "oxygen": MinMaxScaler(feature_range=(0, 1)).fit([[0], [2]])# 氧气 0-2
     }
 
-    ph, temp, salt = extract_property_number(strain_feature)
-    # 3. 标准化每个特征
-    ph_norm = scalers["ph"].transform([[ph]])[0][0]
-    salt_norm = scalers["salt"].transform([[salt]])[0][0]
-    # oxygen_norm = scalers["oxygen"].transform([[oxygen]])[0][0]
-    temp_norm = scalers["temp"].transform([[temp]])[0][0]
+    ph, temp, nacl, oxygen = extract_property_number(strain_feature)
 
-    if np.isnan(ph_norm):
-        ph_norm = -1
-    if np.isnan(salt_norm):
-        salt_norm = -1
-    # if np.isnan(oxygen_norm):
-    #     oxygen_norm = -1
-    if np.isnan(temp_norm):
-        temp_norm = -1
+    feature_list = []
+    if "ph" in property_list:
+        feature_list.append(scalers["ph"].transform([[ph]])[0][0] if ph is not None else -1)
+    if "temp" in property_list:
+        feature_list.append(scalers["temp"].transform([[temp]])[0][0] if temp is not None else -1)
+    if "nacl" in property_list:
+        feature_list.append(scalers["nacl"].transform([[nacl]])[0][0] if nacl is not None else -1)
+    if "oxygen" in property_list:
+        feature_list.append(scalers["oxygen"].transform([[oxygen]])[0][0] if oxygen is not None else -1)
 
-    # 4. 返回4维标准化特征
-    # return np.array([ph_norm, salt_norm, oxygen_norm, temp_norm], dtype=np.float32)
-    return np.array([ph_norm, salt_norm, temp_norm], dtype=np.float32)
+    return np.array(feature_list, dtype=np.float32)
 
 
 class StrainEmbeddingGenerator(nn.Module):
