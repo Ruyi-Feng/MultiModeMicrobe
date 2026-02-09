@@ -53,6 +53,7 @@ class DataProvider:
         """
         self.no_exist_path = []
         args = data_provider_args()
+        self.args = args
         self.tag = args.tag
         self.split_data = args.split_data
         print(f"Will select data with tag: {self.tag}, split: {self.split_data}")
@@ -73,9 +74,9 @@ class DataProvider:
         self._generate()
 
     def _init_data(self):
-        self.property_f = open(os.path.join(self.save_path, "property.bin"), 'ab+')
+        self.property_f = open(os.path.join(self.save_path, self.args.property_file_name), 'ab+')
         self.property_head = 0
-        self.index_f = open(os.path.join(self.save_path, "index.txt"), 'ab+')
+        self.index_f = open(os.path.join(self.save_path, self.args.index_file_name), 'ab+')
 
     def _init_spare_repr(self, spare_folders):
         spare = dict()
@@ -111,6 +112,9 @@ class DataProvider:
         print("resume protein index from: ", bacdive_id)
 
     def cp_file(self, flnm, folder, save_path):
+        # 如果这两个folder是同一个，就不copy
+        if folder == save_path:
+            return
         src = os.path.join(folder, flnm)
         dst = os.path.join(save_path, flnm)
         shutil.copy2(src, dst)
@@ -164,22 +168,22 @@ class DataProvider:
         if len(item["Protein_Paths"]) == 0:
             print(f"Warning, there is no protein file of {item['Genome Accession']}")
             return len(item["Protein_Paths"]) > 0
-        # if self.tag == "pH":
-        #     valid_tag = item["use_ph"]
-        #     valid_split = (item["ph_role"] == self.split_data)
-        #     return valid_tag and valid_split
-        # if self.tag == "temperature":
-        #     valid_tag = item["use_temperature"]
-        #     valid_split = (item["temperature_role"] == self.split_data)
-        #     return valid_tag and valid_split
-        # if self.tag == "salinity":
-        #     valid_tag = item["use_nacl"]
-        #     valid_split = (item["nacl_role"] == self.split_data)
-        #     return valid_tag and valid_split
-        # if self.tag == "oxygen":
-        #     valid_tag = item["use_oxygen"]
-        #     valid_split = (item["oxygen_role"] == self.split_data)
-        #     return valid_tag and valid_split
+        if self.tag == "pH":
+            valid_tag = item["culture_pH_optimum"]
+            if valid_tag is None:
+                return False
+        if self.tag == "temperature":
+            valid_tag = item["culture_temp_optimum"]
+            if valid_tag is None:
+                return False
+        if self.tag == "salinity":
+            valid_tag = item["NaCl_optimum"]
+            if valid_tag is None:
+                return False
+        if self.tag == "oxygen":
+            valid_tag = item["oxygen_binary"]
+            if valid_tag is None:
+                return False
         return True
 
     def rm_unit_in_property(self, property_info):
@@ -232,7 +236,7 @@ class DataProvider:
                 self._generate_index(item["BacDive ID"], property_head, property_tail)
                 print(f"index time: {time.time() - individual_time}")
         if not self.save_collective_representation:
-            save_json(self.protein_index, os.path.join(self.save_path, "protein_index.json"))
+            save_json(self.protein_index, os.path.join(self.save_path, self.args.protein_index_file_name))
         print("finish generate")
         print(f"no exist path: {self.no_exist_path}")
 

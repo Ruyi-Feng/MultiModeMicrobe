@@ -11,6 +11,9 @@ def data_provider_args():
     parser.add_argument('--collective', action='store_true', default=False)
     parser.add_argument('--tag', type=str, default='opt3d', help="normal, pH, temperature, salinity, oxygen")
     parser.add_argument('--split_data', type=str, default='train', help="train, test")
+    parser.add_argument('--property_file_name', type=str, default='property.bin')
+    parser.add_argument('--index_file_name', type=str, default='index.txt')
+    parser.add_argument('--protein_index_file_name', type=str, default='protein_index.json')
     args = parser.parse_args()
     return args
 
