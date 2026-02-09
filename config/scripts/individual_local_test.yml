@@ -27,9 +27,15 @@ aa_repr_dim: 480
 aa_encoder_hidden_dim: 128
 
 # property encoder parameters
-use_llm_property: False
+# use_llm_property: False  # 默认就是false
+
 freeze_property_encoder: False
-property_dim: 3
+property_dim: 1
+# use_ph: True
+use_temp: True
+# use_nacl: True
+# use_oxygen: True
+
 property_embedding_dim: 128
 # use_lora: True
 # property_attn: True

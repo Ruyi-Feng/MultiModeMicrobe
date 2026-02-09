@@ -59,6 +59,11 @@ def train_args():
     parser.add_argument('--property_dim', type=int, default=4)
     parser.add_argument('--property_hidden_dim', type=int, default=64)
 
+    parser.add_argument('--use_ph', action='store_true', default=False)
+    parser.add_argument('--use_temp', action='store_true', default=False)
+    parser.add_argument('--use_nacl', action='store_true', default=False)
+    parser.add_argument('--use_oxygen', action='store_true', default=False)
+
     # LoRA parameters for property encoder
     parser.add_argument('--use_lora', action='store_true', default=False, help='Use LoRA for property encoder')
     parser.add_argument('--lora_r', type=int, default=64, help='LoRA rank (r)')

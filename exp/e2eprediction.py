@@ -162,8 +162,21 @@ def init_optimizer(args, model):
     return optimizer, scheduler
 
 
+def get_property_list(args):
+    property_list = []
+    if args.use_ph:
+        property_list.append("ph")
+    if args.use_temp:
+        property_list.append("temp")
+    if args.use_nacl:
+        property_list.append("nacl")
+    if args.use_oxygen:
+        property_list.append("oxygen")
+    return property_list
+
 def train():
     args = train_args()
+    property_list = get_property_list(args)
 
     # 设置日志记录器
     logger = setup_logger(args)
@@ -191,7 +204,7 @@ def train():
 
     aa_encoder = load_aa_encoder(args)
     hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
-    model = E2EPrediction(aa_encoder, hidden_size=hidden_size)
+    model = E2EPrediction(aa_encoder, hidden_size=hidden_size, property_dim=args.property_dim)
 
     optimizer, scheduler = init_optimizer(args, model)
 
@@ -228,9 +241,7 @@ def train():
 
             pred = out["pred"]
 
-            tgt = tokenizer_p(batch_p, args.device)
-            if tgt.size(-1) > 3:
-                tgt = tgt[:, :3]
+            tgt = tokenizer_p(batch_p, args.device, property_list=property_list)
             loss = model.get_loss(pred, tgt)
 
             with torch.no_grad():
@@ -268,6 +279,7 @@ def train():
 
 def validate():
     args = train_args()
+    property_list = get_property_list(args)
     logger = setup_logger(args)
     logger.info("=" * 80)
     logger.info("E2E Prediction Validation Configuration:")
@@ -306,7 +318,7 @@ def validate():
 
     aa_encoder = load_aa_encoder(args)
     hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
-    model = E2EPrediction(aa_encoder, hidden_size=hidden_size).to(args.device)
+    model = E2EPrediction(aa_encoder, hidden_size=hidden_size, property_dim=args.property_dim).to(args.device)
 
     if args.resume and os.path.isfile(args.resume):
         logger.info(f"=> loading checkpoint '{args.resume}'")
@@ -360,9 +372,7 @@ def validate():
                 )
                 all_top_k_protein_ids.update(top_k_protein_ids)
 
-            tgt = tokenizer_p(batch_p, args.device)
-            if tgt.size(-1) > 3:
-                tgt = tgt[:, :3]
+            tgt = tokenizer_p(batch_p, args.device, property_list=property_list)
 
             loss = model.get_loss(pred, tgt)
             losses.update(loss.item(), batch_a.size(0))

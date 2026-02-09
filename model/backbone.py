@@ -183,14 +183,15 @@ class MicrobeCLIP(nn.Module):
 class E2EPrediction(nn.Module):
     def __init__(self,
                  aa_encoder,
-                 hidden_size: int = 128
+                 hidden_size: int = 128,
+                 property_dim: int = 3
                  ):
         super(E2EPrediction, self).__init__()
         self.hidden_size = hidden_size
         self.pred_layer = nn.Sequential(
             nn.Linear(hidden_size, 32),
             nn.ReLU(),
-            nn.Linear(32, 3),
+            nn.Linear(32, property_dim),
         )  # 目标是预测一个dim=3的向量，分别代表[ph_norm, salt_norm, temp_norm]
         self._init_aa_net(aa_encoder)
 
