@@ -1,0 +1,57 @@
+mark: opt3d
+
+# overall train parameters
+device: cuda
+index_path: /mnt/data/fengruyi/mediaDive/opt3d_test/index.txt
+protein_index_path: /mnt/data/fengruyi/mediaDive/opt3d_test/protein_index.json
+data_path: /mnt/data/fengruyi/mediaDive/opt3d_test/
+resume: ./checkpoints/e2e_checkpoint_8.pth.tar
+save_path: ./checkpoints/e2etest/
+batch_size: 20
+lr: 0.0003
+weight_decay: 0.00001
+start_epoch: 0
+epoch: 20
+print_freq: 2
+tag: opt3d
+
+# data provider parameters
+model_name: esm2_t33_650M_UR50D
+cut_off: 1024
+max_seq_len: 3000
+
+# aa encoder parameters
+# freeze_aa_encoder: True
+aa_encoder_type: attention_convergence
+aa_repr_dim: 480
+aa_encoder_hidden_dim: 128
+
+# property encoder parameters
+use_llm_property: False
+freeze_property_encoder: False
+property_dim: 3
+property_embedding_dim: 128
+# use_lora: True
+# property_attn: True
+# lora_r: 16
+# lora_alpha: 16
+# property_model_path: Qwen/Qwen-1_8B
+
+# backbone parameters
+cross_hidden_size: 128
+
+# training stability parameters
+max_grad_norm: 1.0
+warmup_epochs: 2
+
+# decoder parameters
+decoder_model_name: Qwen/Qwen2.5-0.5B-Instruct
+use_lora_decoder: True
+lora_rank_decoder: 16
+lora_alpha_decoder: 32
+lora_dropout_decoder: 0.05
+decoder_checkpoint: ./checkpoints/finetune_decoder_epoch_1.pth
+
+# media finetune specific parameters
+recipe_loss_weight: 0.07
+lora_lr_multiplier: 2.0
