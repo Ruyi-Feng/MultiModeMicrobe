@@ -232,11 +232,14 @@ class E2EPrediction(nn.Module):
         }
         return preds
 
-    def get_loss(self, logits, gts):
+    def get_loss(self, logits, gts, l1_lambda=1e-5):
         # gts is 3d tensor [ph_norm, salt_norm, temp_norm]，若为4维则取前3维
-        if gts.size(-1) > 3:
-            gts = gts[:, :3]
-        return F.mse_loss(logits, gts)
+        if gts.size(-1) > logits.size(-1):
+            gts = gts[:, :logits.size(-1)]
+        mse_loss = F.mse_loss(logits, gts)
+        # L1正则化：对所有可训练权重施加L1范数惩罚，促进稀疏化
+        l1_reg = sum(param.abs().sum() for param in self.parameters() if param.requires_grad)
+        return mse_loss + l1_lambda * l1_reg
 
 
 class GumbalSoftmax(nn.Module):
