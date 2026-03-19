@@ -145,10 +145,6 @@ class DataProvider:
         }
         """
         self.protein_index.setdefault(bacdive_id, [])
-        exist = self._search_current_repr(bacdive_id)
-        if exist:
-            return
-
         print(f"generate individual representation of {bacdive_id}")
         self.protein_index = self.aa_rep_extractor.get_individual_representation(protein_path=protein_path,
                                                                                  save_path=self.save_path,
@@ -166,9 +162,9 @@ class DataProvider:
             self.index_f.write(idx_s)
 
     def _valid_item(self, item):
-        if len(item["Protein_Paths"]) == 0:
-            print(f"Warning, there is no protein file of {item['Genome Accession']}")
-            return len(item["Protein_Paths"]) > 0
+        # if len(item["Protein_Paths"]) == 0:
+        #     print(f"Warning, there is no protein file of {item['Genome Accession']}")
+        #     return len(item["Protein_Paths"]) > 0
         if self.tag == "pH":
             valid_tag = item["culture_pH_optimum"]
             if valid_tag is None:
@@ -213,6 +209,15 @@ class DataProvider:
             property_info = {k: item[k] for k in self.valid_property_keys if k in item}
             property_info = self.rm_unit_in_property(property_info)
             property_head, property_tail = self._generate_property(property_info)
+
+            # 检查h5是否已经存在，如果存在只需要生成index
+            if not self.save_collective_representation:
+                self.protein_index.setdefault(item["BacDive ID"], [])
+                exist = self._search_current_repr(item["BacDive ID"])
+                if exist:
+                    self._generate_index(item["BacDive ID"], property_head, property_tail)
+                    continue
+
             protein_path = item["Protein_Paths"][0]
             protein_path = os.path.join(self.data_dir, protein_path)
 
@@ -230,7 +235,6 @@ class DataProvider:
                 self._generate_index(item["BacDive ID"], property_head, property_tail, aa_index)
                 # print(f"index time: {time.time() - collective_time}")
             else:
-                # 保留菌株中每个protein的原始的repr
                 self._generate_individual_protein_repr(protein_path, item["BacDive ID"])
                 individual_time = time.time()
                 print(f"individual time: {(individual_time - property_time):.2f}")
