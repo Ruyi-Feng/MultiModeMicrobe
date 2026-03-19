@@ -30,6 +30,8 @@ def train_args():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
+    parser.add_argument('--l1_lambda', type=float, default=1e-5)
+    parser.add_argument('--use_l1', action='store_true', default=False)
     parser.add_argument('--start_epoch', type=int, default=0)
     parser.add_argument('--epoch', type=int, default=20)
     parser.add_argument('--collective', action='store_true', default=False)

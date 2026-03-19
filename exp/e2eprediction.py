@@ -242,7 +242,7 @@ def train():
             pred = out["pred"]
 
             tgt = tokenizer_p(batch_p, args.device, property_list=property_list)
-            loss = model.get_loss(pred, tgt)
+            loss = model.get_loss(pred, tgt, use_l1=args.use_l1, l1_lambda=args.l1_lambda)
 
             with torch.no_grad():
                 mae = F.l1_loss(pred, tgt).item()
