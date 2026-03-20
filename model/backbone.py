@@ -188,6 +188,7 @@ class E2EPrediction(nn.Module):
                  ):
         super(E2EPrediction, self).__init__()
         self.hidden_size = hidden_size
+        self.criterion = nn.MSELoss()
         self.pred_layer = nn.Sequential(
             nn.Linear(hidden_size, 32),
             nn.ReLU(),
@@ -232,14 +233,15 @@ class E2EPrediction(nn.Module):
         }
         return preds
 
-    def get_loss(self, logits, gts, l1_lambda=1e-5):
-        # gts is 3d tensor [ph_norm, salt_norm, temp_norm]，若为4维则取前3维
-        if gts.size(-1) > logits.size(-1):
-            gts = gts[:, :logits.size(-1)]
-        mse_loss = F.mse_loss(logits, gts)
-        # L1正则化：对所有可训练权重施加L1范数惩罚，促进稀疏化
-        l1_reg = sum(param.abs().sum() for param in self.parameters() if param.requires_grad)
-        return mse_loss + l1_lambda * l1_reg
+    def get_loss(self, logits, labels, use_l1=False, l1_lambda=1e-5):
+        if labels.size(-1) > logits.size(-1):
+            labels = labels[:, :logits.size(-1)]
+        loss = self.criterion(logits, labels)
+        if use_l1:
+            l1_loss = sum(p.abs().sum() for p in self._aa_proj.parameters()) \
+                    + sum(p.abs().sum() for p in self.pred_layer.parameters())
+            loss = loss + l1_lambda * l1_loss
+        return loss
 
 
 class GumbalSoftmax(nn.Module):
