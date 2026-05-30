@@ -1,0 +1,89 @@
+# ============================================================
+#  E2E Prediction - 推荐配置（multi-query attention pooling）
+# ============================================================
+#  本配置对应改完一至五条之后的新架构：
+#    * AttentionConvergence 用 4 个 learnable query + 4 head PMA
+#      池化（每个 query 学一组"重要蛋白"，对应 4 个性状）
+#    * 三视角池化：multi-query attention + mean + max 拼接
+#    * E2EPrediction 用 per-property head（每个性状独立 MLP）
+#    * masked MSE：缺失标签 -1 不进 loss
+#    * 紧 min-max：PROPERTY_RANGES = {ph:[4,10], temp:[0,80],
+#                                     nacl:[0,15], oxygen:[0,2]}
+#
+#  关掉的：protein-to-protein self-attention 默认 0 层。
+#  在 max_seq_len=3000 下 self-attn 的 O(S²) 矩阵非常吃显存
+#  （单层、4 头、batch=8 大约 1.5GB attention scores）。
+#  显存富裕时把 aa_self_attn_layers 调到 1 通常能进一步涨点。
+# ============================================================
+
+# ---- run identity ----
+mark: e2e_mq
+# 每个实验给一个独立 prefix，避免不同设置互相覆盖 checkpoint
+checkpoint_prefix: e2e_mq
+
+# ---- paths ----
+device: cuda
+index_path: /mnt/data/fengruyi/mediaDive/opt3d_test/index.txt
+protein_index_path: /mnt/data/fengruyi/mediaDive/opt3d_test/protein_index.json
+data_path: /mnt/data/fengruyi/mediaDive/opt3d_test/
+save_path: ./checkpoints/e2e_mq/
+# 新架构和旧 checkpoint 不兼容，从零开始
+resume: null
+
+# ---- training ----
+batch_size: 16
+lr: 3.0e-4
+weight_decay: 1.0e-5
+start_epoch: 0
+epoch: 30
+print_freq: 10
+max_grad_norm: 1.0
+warmup_epochs: 2
+
+# ---- data ----
+model_name: esm2_t33_650M_UR50D
+cut_off: 1024
+max_seq_len: 3000
+
+# ---- aa encoder (multi-query attention pooling) ----
+aa_encoder_type: attention_convergence
+aa_repr_dim: 480
+aa_encoder_hidden_dim: 128       # legacy 路径才会用到；新路径忽略
+aa_num_queries: 4                # 4 个性状各自一个 query
+aa_pool_num_heads: 4
+aa_self_attn_layers: 0           # 显存够可以调到 1（O(S²) 很贵）
+aa_concat_mean_max: True         # 拼 mean+max 三视角
+aa_pool_dropout: 0.1
+
+# ---- property targets ----
+# 注意：property_dim 必须等于打开的 use_* 个数
+use_ph: True
+use_temp: True
+use_nacl: True
+use_oxygen: True
+property_dim: 4
+property_embedding_dim: 128
+use_llm_property: False
+freeze_property_encoder: False
+
+# ---- prediction head ----
+cross_hidden_size: 128
+per_property_head: True
+pred_dropout: 0.1
+
+# ---- loss ----
+# 对 aa attention weights 的熵正则；>0 时鼓励权重稀疏地选少数蛋白。
+# 一上来设 0，看是否塌缩再决定要不要拉到 0.01~0.05。
+attn_sparsity_lambda: 0.0
+# use_l1 / l1_lambda 旧字段，新版 get_loss 已不再使用
+use_l1: False
+l1_lambda: 0.0
+
+# ---- 下游 LLM decoder（本脚本不用到，留作占位） ----
+decoder_model_name: Qwen/Qwen2.5-0.5B-Instruct
+use_lora_decoder: True
+lora_rank_decoder: 16
+lora_alpha_decoder: 32
+lora_dropout_decoder: 0.05
+recipe_loss_weight: 0.07
+lora_lr_multiplier: 2.0

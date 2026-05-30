@@ -21,6 +21,9 @@ def train_args():
     parser = argparse.ArgumentParser()
     # overall train parameters
     parser.add_argument('--mark', type=str, default='not_set')
+    parser.add_argument('--checkpoint_prefix', type=str, default='e2e',
+                        help='Prefix for saved checkpoint filenames, e.g. "{prefix}_checkpoint_{epoch}.pth.tar". '
+                             'Use a per-run prefix to avoid overwriting weights across experiments.')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--index_path', type=str, default='./data/collective/index.txt')
     parser.add_argument('--protein_index_path', type=str, default='./data/individual/protein_index.json')
@@ -50,6 +53,30 @@ def train_args():
     parser.add_argument('--aa_encoder_num_layers', type=int, default=3)
     parser.add_argument('--aa_encoder_dropout', type=float, default=0.1)
     parser.add_argument('--aa_encoder_type', type=str, default="cross_attention_fusion")
+
+    # attention_convergence (new multi-query pooling) parameters
+    parser.add_argument('--aa_num_queries', type=int, default=4,
+                        help='Number of learnable query tokens for PMA pooling. 1=legacy single-query behavior.')
+    parser.add_argument('--aa_pool_num_heads', type=int, default=4,
+                        help='Number of heads for PMA pooling and protein self-attention.')
+    parser.add_argument('--aa_self_attn_layers', type=int, default=1,
+                        help='Number of protein-to-protein self-attention layers before pooling.')
+    parser.add_argument('--aa_concat_mean_max', action='store_true', default=True,
+                        help='Concat mean+max pooling with attention pooling (three-view pooling).')
+    parser.add_argument('--aa_no_concat_mean_max', dest='aa_concat_mean_max', action='store_false',
+                        help='Disable mean/max concat (smaller projection).')
+    parser.add_argument('--aa_pool_dropout', type=float, default=0.1,
+                        help='Dropout in PMA pooling and protein self-attn block.')
+
+    # e2e prediction head parameters
+    parser.add_argument('--per_property_head', action='store_true', default=True,
+                        help='Use a separate MLP head per property.')
+    parser.add_argument('--shared_head', dest='per_property_head', action='store_false',
+                        help='Use one shared MLP head instead of per-property heads.')
+    parser.add_argument('--pred_dropout', type=float, default=0.1,
+                        help='Dropout inside prediction head MLP.')
+    parser.add_argument('--attn_sparsity_lambda', type=float, default=0.0,
+                        help='Entropy regularization on aa attention weights (replaces old L1 on MLP).')
 
     # property encoder parameters
     parser.add_argument('--use_llm_property', action='store_true', default=False)

@@ -33,21 +33,25 @@ class IndividualDataset(Dataset):
             # bacdive_id, txt_head, txt_tail
         self.protein_index = load_json(protein_index_path)
 
-    def _get_aa_repr_from_h5(self, aa_index_list, bacdive_id, ):
-        aa_loader = AaIndividualLoader(self.data_path, f"{bacdive_id}.h5")
-        aa_representation = None
+    def _get_aa_repr_from_h5(self, aa_index_list, bacdive_id):
+        """从 {bacdive_id}.h5 一次性按 fancy index 读所有蛋白，避免 3000+ 次 open/close。"""
+        h5_path = os.path.join(self.data_path, f"{bacdive_id}.h5")
+        flat = []
         for aa_index in aa_index_list:
             for item in aa_index:
-                if aa_representation is None:
-                    aa_representation = aa_loader(item).unsqueeze(0)
-                else:
-                    aa_representation = torch.concat((aa_representation, aa_loader(item).unsqueeze(0)), axis=0)
-                if len(aa_representation) >= self.max_seq_len:
-                    return aa_representation
-        # if len(aa_representation) < self.max_seq_len:
-        #     shape = aa_representation[0].shape
-        #     aa_representation = aa_representation + np.zeros(shape).tolist() * (self.max_seq_len - len(aa_representation))
-        return aa_representation
+                flat.append(int(item))
+                if len(flat) >= self.max_seq_len:
+                    break
+            if len(flat) >= self.max_seq_len:
+                break
+        if not flat:
+            return None
+        flat_arr = np.asarray(flat, dtype=np.int64)
+        unique_sorted, inverse = np.unique(flat_arr, return_inverse=True)
+        with h5py.File(h5_path, 'r') as f:
+            feats = f['protein_features'][unique_sorted.tolist()]  # (U, D)
+        feats = feats[inverse]  # 还原回原顺序，保持与旧逻辑一致
+        return torch.tensor(feats, dtype=torch.float32)
 
     def __len__(self):
         return self.dataset_length

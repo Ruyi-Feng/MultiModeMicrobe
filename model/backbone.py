@@ -79,13 +79,15 @@ class MicrobeCLIP(nn.Module):
                 raise ValueError("aa_encoder must be provided when collective is False")
 
             if aa_encoder.name == "microbe_protein_repr":
-                self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+                in_dim = getattr(aa_encoder, "output_dim", aa_encoder.embed_dim)
+                self._aa_proj = nn.Linear(in_dim, cross_hidden_size, bias=False)
                 # 使用Xavier初始化投影层
                 nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
                 # 用于贴在前面提取表征的向量，使用更小的初始化范围
                 self.protein_cls_token = nn.Parameter(torch.randn(1, 1, aa_representation_dim) * 0.02)
             if aa_encoder.name in ["gumbal_softmax", "attention_convergence"]:
-                self._aa_proj = nn.Linear(aa_encoder.embed_dim, cross_hidden_size, bias=False)
+                in_dim = getattr(aa_encoder, "output_dim", aa_encoder.embed_dim)
+                self._aa_proj = nn.Linear(in_dim, cross_hidden_size, bias=False)
                 # 使用Xavier初始化投影层
                 nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
             self.aa_encoder = aa_encoder
@@ -180,34 +182,62 @@ class MicrobeCLIP(nn.Module):
             return pred
 
 
+MISSING_LABEL = -1.0  # 必须与 property_encoder.MISSING_VALUE 保持一致
+
+
 class E2EPrediction(nn.Module):
     def __init__(self,
                  aa_encoder,
                  hidden_size: int = 128,
-                 property_dim: int = 3
+                 property_dim: int = 3,
+                 per_property_head: bool = True,
+                 pred_dropout: float = 0.1,
                  ):
         super(E2EPrediction, self).__init__()
         self.hidden_size = hidden_size
-        self.criterion = nn.MSELoss()
-        self.pred_layer = nn.Sequential(
-            nn.Linear(hidden_size, 32),
-            nn.ReLU(),
-            nn.Linear(32, property_dim),
-        )  # 目标是预测一个dim=3的向量，分别代表[ph_norm, salt_norm, temp_norm]
+        self.property_dim = property_dim
+        self.per_property_head = per_property_head
         self._init_aa_net(aa_encoder)
+        self._init_pred_head(hidden_size, property_dim, pred_dropout)
 
     def _init_aa_net(self, aa_encoder):
-        self._aa_proj = nn.Linear(aa_encoder.embed_dim, self.hidden_size, bias=False)
-        nn.init.xavier_uniform_(self._aa_proj.weight, gain=1.0)
+        # 新版 AttentionConvergence 在多 query / mean-max 拼接下，输出维度
+        # 不再等于 embed_dim，必须读 output_dim。
+        in_dim = getattr(aa_encoder, "output_dim", aa_encoder.embed_dim)
+        self._aa_proj = nn.Sequential(
+            nn.Linear(in_dim, self.hidden_size),
+            nn.LayerNorm(self.hidden_size),
+        )
+        nn.init.xavier_uniform_(self._aa_proj[0].weight, gain=1.0)
+        nn.init.zeros_(self._aa_proj[0].bias)
         self.aa_encoder = aa_encoder
-        # microbe_protein_repr 需要 cls token，与 backbone 一致
         if getattr(aa_encoder, "name", None) == "microbe_protein_repr":
             self.protein_cls_token = nn.Parameter(
                 torch.randn(1, 1, aa_encoder.embed_dim) * 0.02
             )
 
+    def _init_pred_head(self, hidden_size, property_dim, dropout):
+        def make_head(out_dim):
+            mid = max(hidden_size // 2, 16)
+            return nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_size, mid),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(mid, out_dim),
+            )
+
+        if self.per_property_head:
+            # 每个 property 一个独立 head，避免 4 个性状共享同一组特征做最后一层映射
+            self.pred_layer = nn.ModuleList([make_head(1) for _ in range(property_dim)])
+        else:
+            self.pred_layer = make_head(property_dim)
+
     def forward(self, aa_seq, padding_mask=None):
-        # 与 backbone 一致：microbe_protein_repr 先拼 cls token
+        aa_weights = None
         if getattr(self.aa_encoder, "name", None) == "microbe_protein_repr":
             cls_token = self.protein_cls_token.expand(aa_seq.size(0), -1, -1)
             aa_seq = torch.cat([cls_token, aa_seq], dim=1)
@@ -226,21 +256,40 @@ class E2EPrediction(nn.Module):
 
         aa_embedding = self._aa_proj(aa_embedding)
 
-        pred = self.pred_layer(aa_embedding)
-        preds = {
-            "pred": pred,
-            "aa_weights": aa_weights
-        }
-        return preds
+        if self.per_property_head:
+            pred = torch.cat([head(aa_embedding) for head in self.pred_layer], dim=-1)
+        else:
+            pred = self.pred_layer(aa_embedding)
 
-    def get_loss(self, logits, labels, use_l1=False, l1_lambda=1e-5):
+        return {
+            "pred": pred,
+            "aa_weights": aa_weights,
+        }
+
+    def get_loss(self,
+                 logits,
+                 labels,
+                 attn_weights=None,
+                 attn_sparsity_lambda: float = 0.0,
+                 missing_value: float = MISSING_LABEL):
+        """Masked MSE：缺失值（== missing_value）不进 loss，避免 -1 哨兵污染回归目标。
+
+        可选：对 attention weights 加熵正则（lambda * mean entropy），鼓励聚合稀疏地选蛋白。
+        """
         if labels.size(-1) > logits.size(-1):
             labels = labels[:, :logits.size(-1)]
-        loss = self.criterion(logits, labels)
-        if use_l1:
-            l1_loss = sum(p.abs().sum() for p in self._aa_proj.parameters()) \
-                    + sum(p.abs().sum() for p in self.pred_layer.parameters())
-            loss = loss + l1_lambda * l1_loss
+
+        valid = (labels != missing_value).float()
+        diff_sq = (logits - labels) ** 2
+        denom = valid.sum().clamp(min=1.0)
+        loss = (diff_sq * valid).sum() / denom
+
+        if attn_sparsity_lambda > 0 and attn_weights is not None:
+            # aa_weights 可能是 (B, S) 或 (B, num_queries, S)
+            w = attn_weights.clamp(min=1e-9)
+            entropy = -(w * w.log()).sum(dim=-1)  # (B,) 或 (B, num_queries)
+            loss = loss + attn_sparsity_lambda * entropy.mean()
+
         return loss
 
 
@@ -272,41 +321,177 @@ class GumbalSoftmax(nn.Module):
 
 
 class AttentionConvergence(nn.Module):
-    def __init__(self, embed_dim, hidden_dim=None, *args, **kwargs):
+    """聚合 (B, S, D) -> (B, output_dim)。
+
+    旧版只有一个 tanh+v 的标量 score，softmax over S，每个菌株只挑出一组"重要蛋白"
+    并把 3000+ 蛋白压成单一加权向量；对温度/pH/盐/氧 4 个互相独立的性状来说瓶颈极窄。
+
+    新版默认开启：
+      - K 个可学习 query token + multi-head attention pooling（Set Transformer 的 PMA）
+        让模型对不同性状分配不同的"重要蛋白集合"。
+      - 可选 protein-protein self-attention 层（让蛋白之间能交互）。
+      - 可选 mean / max 统计与 attention pooling 拼接（三视角池化更鲁棒）。
+
+    输出维度 = num_queries * embed_dim  (+ 2 * embed_dim 如果 concat_mean_max)。
+
+    向后兼容：num_queries=1 & num_heads=1 & self_attn_layers=0 & not concat_mean_max
+    时退化为旧的 tanh+v 行为，output_dim=embed_dim。
+    """
+
+    def __init__(self,
+                 embed_dim,
+                 hidden_dim=None,
+                 num_queries: int = 4,
+                 num_heads: int = 4,
+                 self_attn_layers: int = 1,
+                 concat_mean_max: bool = True,
+                 dropout: float = 0.1,
+                 *args, **kwargs):
         super().__init__()
         self.name = "attention_convergence"
         self.embed_dim = embed_dim
-        if hidden_dim is None:
-            hidden_dim = embed_dim
-        self.linear = nn.Linear(embed_dim, hidden_dim)
-        # 使用较小的初始化值，与代码库中其他参数初始化保持一致
-        self.v = nn.Parameter(torch.randn(hidden_dim) * 0.02, requires_grad=True)
+        self.num_queries = num_queries
+        self.num_heads = num_heads
+        self.self_attn_layers = self_attn_layers
+        self.concat_mean_max = concat_mean_max
+
+        self._legacy = (num_queries == 1 and num_heads == 1
+                        and self_attn_layers == 0 and not concat_mean_max)
+
+        if self._legacy:
+            if hidden_dim is None:
+                hidden_dim = embed_dim
+            self.linear = nn.Linear(embed_dim, hidden_dim)
+            self.v = nn.Parameter(torch.randn(hidden_dim) * 0.02, requires_grad=True)
+            self.output_dim = embed_dim
+            return
+
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})"
+            )
+
+        # 可选的 protein-to-protein self-attention（pre-norm transformer block）
+        if self_attn_layers > 0:
+            self.self_attn_norms = nn.ModuleList([
+                nn.LayerNorm(embed_dim) for _ in range(self_attn_layers)
+            ])
+            self.self_attns = nn.ModuleList([
+                nn.MultiheadAttention(embed_dim, num_heads, dropout, batch_first=True)
+                for _ in range(self_attn_layers)
+            ])
+            self.ffn_norms = nn.ModuleList([
+                nn.LayerNorm(embed_dim) for _ in range(self_attn_layers)
+            ])
+            self.ffns = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(embed_dim, embed_dim * 2),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(embed_dim * 2, embed_dim),
+                    nn.Dropout(dropout),
+                )
+                for _ in range(self_attn_layers)
+            ])
+
+        # PMA：K 个可学习 query 跨多头注意力，每个 query 出一个汇聚向量
+        self.queries = nn.Parameter(torch.randn(1, num_queries, embed_dim) * 0.02)
+        self.pool_q_norm = nn.LayerNorm(embed_dim)
+        self.pool_k_norm = nn.LayerNorm(embed_dim)
+        self.pma = nn.MultiheadAttention(embed_dim, num_heads, dropout, batch_first=True)
+        self.pool_out_norm = nn.LayerNorm(embed_dim)
+
+        out_dim = num_queries * embed_dim
+        if concat_mean_max:
+            out_dim += 2 * embed_dim
+        self.output_dim = out_dim
+
+    def _legacy_forward(self, aa_repr, padding_mask=None, return_weights=False):
+        x = self.linear(aa_repr)
+        e = torch.matmul(F.tanh(x), self.v)
+        all_padding = None
+        if padding_mask is not None:
+            e = e.masked_fill(~padding_mask, float('-inf'))
+            valid_lengths = padding_mask.sum(dim=1)
+            all_padding = valid_lengths == 0
+        weights = F.softmax(e, dim=1)
+        if padding_mask is not None and all_padding is not None and all_padding.any():
+            uniform_weights = torch.ones_like(weights) / weights.size(1)
+            weights = torch.where(all_padding.unsqueeze(1), uniform_weights, weights)
+        out = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)
+        if return_weights:
+            return out, weights
+        return out
 
     def forward(self, aa_repr, padding_mask=None, return_weights=False):
         """
         Args:
-            aa_repr: (B, S, embed_dim) 输入序列表示
-            padding_mask: (B, S) 可选，True 表示有效位置，False 表示 padding
+            aa_repr: (B, S, embed_dim)
+            padding_mask: (B, S) bool, True 表示有效，False 表示 padding
         Returns:
-            x: (B, embed_dim) 聚合后的序列表示
+            (B, output_dim) [, weights]
+            weights: 单 query 时 (B, S)；多 query 时 (B, num_queries, S)
         """
-        x = self.linear(aa_repr)
-        e = torch.matmul(F.tanh(x), self.v)  # (B, S, hidden_dim) @ (hidden_dim,) -> (B, S)
+        if self._legacy:
+            return self._legacy_forward(aa_repr, padding_mask, return_weights)
 
-        all_padding = None
+        B = aa_repr.size(0)
+        # nn.MultiheadAttention 的 key_padding_mask 语义是 True=ignore
+        key_padding_mask = None
+        all_pad = None
         if padding_mask is not None:
-            e = e.masked_fill(~padding_mask, float('-inf'))
-            valid_lengths = padding_mask.sum(dim=1)  # (B,)
-            all_padding = valid_lengths == 0
-        weights = F.softmax(e, dim=1)  # (B, S)
-        if padding_mask is not None and all_padding is not None and all_padding.any():
-            uniform_weights = torch.ones_like(weights) / weights.size(1)
-            weights = torch.where(all_padding.unsqueeze(1), uniform_weights, weights)
-        x = (aa_repr * weights.unsqueeze(-1)).sum(dim=1)  # (B, S, embed_dim) -> (B, embed_dim)
+            key_padding_mask = ~padding_mask
+            all_pad = key_padding_mask.all(dim=1)
+            if all_pad.any():
+                # 防 NaN：全 padding 的样本把第 0 位强制设为有效
+                key_padding_mask = key_padding_mask.clone()
+                key_padding_mask[all_pad, 0] = False
+
+        # 1) protein-protein self-attention（让蛋白之间交互）
+        x = aa_repr
+        for i in range(self.self_attn_layers):
+            x_norm = self.self_attn_norms[i](x)
+            attn_out, _ = self.self_attns[i](
+                x_norm, x_norm, x_norm,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+            x = x + attn_out
+            x_norm = self.ffn_norms[i](x)
+            x = x + self.ffns[i](x_norm)
+
+        # 2) multi-query attention pooling (PMA)
+        Q = self.queries.expand(B, -1, -1)
+        Q_n = self.pool_q_norm(Q)
+        K_n = self.pool_k_norm(x)
+        pooled, weights = self.pma(
+            Q_n, K_n, K_n,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            average_attn_weights=True,
+        )
+        # pooled: (B, num_queries, D); weights: (B, num_queries, S)
+        pooled = self.pool_out_norm(pooled)
+        out = pooled.flatten(1)  # (B, num_queries * D)
+
+        # 3) 可选 mean / max 与 attention pooling 拼接（三视角池化）
+        if self.concat_mean_max:
+            if padding_mask is not None:
+                mask_f = padding_mask.unsqueeze(-1).float()
+                denom = mask_f.sum(dim=1).clamp(min=1.0)
+                mean_pool = (x * mask_f).sum(dim=1) / denom
+                masked_for_max = x.masked_fill(~padding_mask.unsqueeze(-1), float('-inf'))
+                max_pool = masked_for_max.max(dim=1).values
+                # 全 padding 的样本 max 会是 -inf，置 0
+                max_pool = torch.where(torch.isinf(max_pool), torch.zeros_like(max_pool), max_pool)
+            else:
+                mean_pool = x.mean(dim=1)
+                max_pool = x.max(dim=1).values
+            out = torch.cat([out, mean_pool, max_pool], dim=1)
+
         if return_weights:
-            return x, weights
-        else:
-            return x
+            return out, weights
+        return out
 
 
 class MicrobeProteinRepr(nn.Module):

@@ -1,10 +1,25 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
-from sklearn.preprocessing import MinMaxScaler
+import ast
 import json
+
 import numpy as np
 import torch
 import torch.nn as nn
+from peft import LoraConfig, get_peft_model, TaskType
+from sklearn.preprocessing import MinMaxScaler
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+# 反归一化和 loss mask 都依赖这套范围。
+# 这里收紧到接近真实分布的区间（旧版用极端边界 [1,14]/[0,100]/[0,30] 会把所有有效值挤到 [0.3,0.6]，
+# 导致 MSE 信号过弱），新的范围让动态范围占满 [0,1]。
+PROPERTY_RANGES = {
+    "ph": (4.0, 10.0),
+    "temp": (0.0, 80.0),
+    "nacl": (0.0, 15.0),
+    "oxygen": (0.0, 2.0),
+}
+# 缺失值哨兵；下游 loss 必须用 != MISSING_VALUE 做 mask
+MISSING_VALUE = -1.0
 
 
 # ====================用Qwen做description的property encoder====================
@@ -97,24 +112,36 @@ def get_numerical_property_encoder(property_dim,
 def numerical_property_tokenizer(property_seqs: list, device="cuda", property_list=["ph", "temp", "nacl", "oxygen"]):
     batch_vec = []
     for property_seq in property_seqs:
-        if property_seq.endswith("\n"):
-            property_seq = property_seq[:-1]
-        property_seq = eval(property_seq)
-        emb_vec = standardize_strain_features(property_seq, property_list)
+        if isinstance(property_seq, str):
+            property_seq = property_seq.rstrip("\n").strip()
+            try:
+                parsed = ast.literal_eval(property_seq) if property_seq else {}
+            except (ValueError, SyntaxError):
+                # 解析失败时退化为"全缺失"，loss 端会 mask 掉
+                parsed = {}
+        else:
+            parsed = property_seq
+        if not isinstance(parsed, dict):
+            parsed = {}
+        emb_vec = standardize_strain_features(parsed, property_list)
         batch_vec.append(emb_vec)
-    batch_vec = torch.tensor(batch_vec).to(device)
-    return batch_vec  # [batch_size, 4]
+    batch_vec = torch.tensor(np.stack(batch_vec, axis=0), dtype=torch.float32).to(device)
+    return batch_vec  # [batch_size, len(property_list)]
 
-def oxygen_tolerance_to_numeric(oxygen_type: str) -> float:
-    """将氧气耐受度分类转为数值"""
+def oxygen_tolerance_to_numeric(oxygen_type):
+    """字符串氧气分类转数值；不能识别时返回 None（让上游按缺失处理）。"""
     if oxygen_type is None:
-        return 1.0
+        return None
+    if isinstance(oxygen_type, (int, float)) and np.isfinite(oxygen_type):
+        return float(oxygen_type)
+    if not isinstance(oxygen_type, str):
+        return None
     oxygen_map = {
-        "anaerobic": 0.0,          # 厌氧
+        "anaerobic": 0.0,              # 厌氧
         "facultative anaerobic": 1.0,  # 兼性厌氧
-        "aerobic": 2.0             # 好氧
+        "aerobic": 2.0,                # 好氧
     }
-    return oxygen_map.get(oxygen_type.lower(), 1.0)  # 默认兼性厌氧
+    return oxygen_map.get(oxygen_type.lower().strip())
 
 def extract_property_number(strain_feature: dict) -> dict:
     if "culture_pH_optimum" in strain_feature:
@@ -135,39 +162,50 @@ def extract_property_number(strain_feature: dict) -> dict:
         oxygen = None
     return ph, temp, nacl, oxygen
 
+def _scale_or_missing(value, lo, hi):
+    """把 value 线性 scale 到 [0,1]；缺失或非法返回 MISSING_VALUE。"""
+    if value is None:
+        return MISSING_VALUE
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return MISSING_VALUE
+    if not np.isfinite(v):
+        return MISSING_VALUE
+    scaled = (v - lo) / (hi - lo)
+    return float(np.clip(scaled, 0.0, 1.0))
+
+
 def standardize_strain_features(strain_feature: dict, property_list=["ph", "temp", "nacl", "oxygen"]) -> np.ndarray:
-    """标准化所需要的菌株特征为0-1范围的向量
+    """标准化菌株特征为 0-1 向量；缺失值用 MISSING_VALUE (-1) 占位。
 
-    strain_feature: dict, 菌株特征字典
-    property_list: list, 需要标准化的属性列表
-    return: np.ndarray, 标准化后的菌株特征向量
-
-    return 维度和property_list的长度一致
-    feature_list[i] = -1 表示该属性不存在
-    feature_list[i] = 0-1 表示该属性存在且标准化后的值
+    下游 loss/metric 必须用 (target != MISSING_VALUE) 做 mask，否则
+    缺失样本会以 -1 的标签污染 MSE，把模型拉成一条直线。
     """
-    # ------------------------==============这里的字段变了，并且里面是字符串，需要把数字提取出来。
-
-    scalers = {
-        "ph": MinMaxScaler(feature_range=(0, 1)).fit([[1], [14]]),  # pH 1-14
-        "temp": MinMaxScaler(feature_range=(0, 1)).fit([[0], [100]]), # 温度 0-100℃
-        "nacl": MinMaxScaler(feature_range=(0, 1)).fit([[0], [30]]), # 盐分 0-30%
-        "oxygen": MinMaxScaler(feature_range=(0, 1)).fit([[0], [2]])# 氧气 0-2
-    }
+    if not isinstance(strain_feature, dict):
+        strain_feature = {}
 
     ph, temp, nacl, oxygen = extract_property_number(strain_feature)
+    oxygen_num = oxygen_tolerance_to_numeric(oxygen)
+
+    raw = {
+        "ph": ph,
+        "temp": temp,
+        "nacl": nacl,
+        "oxygen": oxygen_num,
+    }
 
     feature_list = []
-    if "ph" in property_list:
-        feature_list.append(scalers["ph"].transform([[ph]])[0][0] if ph is not None else -1)
-    if "temp" in property_list:
-        feature_list.append(scalers["temp"].transform([[temp]])[0][0] if temp is not None else -1)
-    if "nacl" in property_list:
-        feature_list.append(scalers["nacl"].transform([[nacl]])[0][0] if nacl is not None else -1)
-    if "oxygen" in property_list:
-        feature_list.append(scalers["oxygen"].transform([[oxygen]])[0][0] if oxygen is not None else -1)
-
+    for name in property_list:
+        lo, hi = PROPERTY_RANGES[name]
+        feature_list.append(_scale_or_missing(raw.get(name), lo, hi))
     return np.array(feature_list, dtype=np.float32)
+
+
+def denormalize_property(values, name):
+    """把 [0,1] 反归一化到原始物理量纲。values: torch.Tensor 或 np.ndarray。"""
+    lo, hi = PROPERTY_RANGES[name]
+    return values * (hi - lo) + lo
 
 
 class StrainEmbeddingGenerator(nn.Module):

@@ -27,7 +27,12 @@ from exp.train import (
 from config import train_args
 from exp.dataset import IndividualDataset, CollectiveDataset
 from model import E2EPrediction, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
-from model.property_encoder import get_numerical_property_encoder
+from model.property_encoder import (
+    get_numerical_property_encoder,
+    PROPERTY_RANGES,
+    MISSING_VALUE,
+    denormalize_property,
+)
 from utils.tools import get_optimizer_params
 from utils.json_loader import load_json, save_json
 
@@ -47,10 +52,26 @@ def load_aa_encoder(args):
         aa_encoder = AttentionConvergence(
             embed_dim=args.aa_repr_dim,
             hidden_dim=getattr(args, "aa_encoder_hidden_dim", args.aa_repr_dim),
+            num_queries=getattr(args, "aa_num_queries", 4),
+            num_heads=getattr(args, "aa_pool_num_heads", 4),
+            self_attn_layers=getattr(args, "aa_self_attn_layers", 1),
+            concat_mean_max=getattr(args, "aa_concat_mean_max", True),
+            dropout=getattr(args, "aa_pool_dropout", 0.1),
         )
     else:
         raise ValueError(f"Invalid aa_encoder_type: {args.aa_encoder_type}")
     return aa_encoder
+
+
+def build_e2e_model(args, aa_encoder):
+    hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
+    return E2EPrediction(
+        aa_encoder,
+        hidden_size=hidden_size,
+        property_dim=args.property_dim,
+        per_property_head=getattr(args, "per_property_head", True),
+        pred_dropout=getattr(args, "pred_dropout", 0.1),
+    )
 
 
 def _visual_weights(aa_weights, keys, save_dir):
@@ -117,6 +138,10 @@ def _get_true_index(rank_k: int, protein_index: list):
 def get_importance_score(aa_weights, keys, args, protein_index, top_k=30, if_visualize=False):
     if args.collective:
         raise ValueError("Collective mode is not supported for importance score calculation")
+
+    # 多 query 时 aa_weights 是 (B, num_queries, S)，对 query 维度平均得到全局重要性
+    if aa_weights.dim() == 3:
+        aa_weights = aa_weights.mean(dim=1)
 
     import_rank = aa_weights.argsort(dim=1, descending=False)
     if if_visualize:
@@ -203,8 +228,7 @@ def train():
     )
 
     aa_encoder = load_aa_encoder(args)
-    hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
-    model = E2EPrediction(aa_encoder, hidden_size=hidden_size, property_dim=args.property_dim)
+    model = build_e2e_model(args, aa_encoder)
 
     optimizer, scheduler = init_optimizer(args, model)
 
@@ -214,6 +238,8 @@ def train():
         f"initial_lr={args.lr}, total_epochs={args.epoch}"
     )
 
+    attn_sparsity_lambda = getattr(args, "attn_sparsity_lambda", 0.0)
+
     for epoch in range(args.start_epoch, args.epoch):
         logger.info(f"\n{'='*80}")
         logger.info(f"Epoch {epoch+1}/{args.epoch}")
@@ -222,9 +248,10 @@ def train():
         batch_time = AverageMeter("Time", ":6.3f")
         losses = AverageMeter("Loss", ":.4e")
         mae_meter = AverageMeter("MAE", ":.4f")
+        per_prop_mae = {name: AverageMeter(f"MAE_{name}", ":.4f") for name in property_list}
         progress = ProgressMeter(
             len(train_loader),
-            [batch_time, losses, mae_meter],
+            [batch_time, losses, mae_meter] + list(per_prop_mae.values()),
             prefix="Epoch: [{}]".format(epoch),
         )
 
@@ -240,13 +267,32 @@ def train():
             out = model(batch_a, padding_mask=padding_mask)
 
             pred = out["pred"]
+            aa_weights = out.get("aa_weights")
 
             tgt = tokenizer_p(batch_p, args.device, property_list=property_list)
-            loss = model.get_loss(pred, tgt, use_l1=args.use_l1, l1_lambda=args.l1_lambda)
+            loss = model.get_loss(
+                pred,
+                tgt,
+                attn_weights=aa_weights,
+                attn_sparsity_lambda=attn_sparsity_lambda,
+            )
 
             with torch.no_grad():
-                mae = F.l1_loss(pred, tgt).item()
-            mae_meter.update(mae, batch_a.size(0))
+                # 总体 MAE：忽略缺失值（== MISSING_VALUE）
+                valid_all = (tgt != MISSING_VALUE)
+                if valid_all.any():
+                    mae = (pred[valid_all] - tgt[valid_all]).abs().mean().item()
+                    mae_meter.update(mae, valid_all.sum().item())
+                # 每个 property 单独 MAE
+                for j, name in enumerate(property_list):
+                    col_tgt = tgt[:, j]
+                    col_pred = pred[:, j]
+                    mask_j = (col_tgt != MISSING_VALUE)
+                    n_valid = int(mask_j.sum().item())
+                    if n_valid > 0:
+                        mae_j = (col_pred[mask_j] - col_tgt[mask_j]).abs().mean().item()
+                        per_prop_mae[name].update(mae_j, n_valid)
+
             losses.update(loss.item(), batch_a.size(0))
 
             optimizer.zero_grad()
@@ -263,7 +309,8 @@ def train():
 
         scheduler.step()
 
-        save_name = os.path.join(args.save_path, f"e2e_checkpoint_{epoch+1}.pth.tar")
+        ckpt_prefix = getattr(args, "checkpoint_prefix", "e2e")
+        save_name = os.path.join(args.save_path, f"{ckpt_prefix}_checkpoint_{epoch+1}.pth.tar")
         save_checkpoint(
             {
                 "epoch": epoch + 1,
@@ -317,8 +364,7 @@ def validate():
     )
 
     aa_encoder = load_aa_encoder(args)
-    hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
-    model = E2EPrediction(aa_encoder, hidden_size=hidden_size, property_dim=args.property_dim).to(args.device)
+    model = build_e2e_model(args, aa_encoder).to(args.device)
 
     if args.resume and os.path.isfile(args.resume):
         logger.info(f"=> loading checkpoint '{args.resume}'")
@@ -396,50 +442,65 @@ def validate():
 
     preds = torch.cat(all_preds, dim=0)
     gts = torch.cat(all_gts, dim=0)
-    overall_mse = F.mse_loss(preds, gts).item()
-    logger.info(f"Overall MSE (normalized): {overall_mse:.6f}")
 
-    def denorm(x, min_val, max_val):
-        return x * (max_val - min_val) + min_val
-
-    ph_pred = denorm(preds[:, 0], 1.0, 14.0)
-    ph_gt = denorm(gts[:, 0], 1.0, 14.0)
-    salt_pred = denorm(preds[:, 1], 0.0, 30.0)
-    salt_gt = denorm(gts[:, 1], 0.0, 30.0)
-    temp_pred = denorm(preds[:, 2], 0.0, 100.0)
-    temp_gt = denorm(gts[:, 2], 0.0, 100.0)
-
-    mse_ph = F.mse_loss(ph_pred, ph_gt).item()
-    mse_salt = F.mse_loss(salt_pred, salt_gt).item()
-    mse_temp = F.mse_loss(temp_pred, temp_gt).item()
-    logger.info(f"Denorm MSE - pH: {mse_ph:.6f}, salt: {mse_salt:.6f}, temp: {mse_temp:.6f}")
+    # 总体 MSE 也要 mask：之前直接对 gt 含 -1 的位置算 MSE 会把指标完全带偏
+    overall_mask = (gts != MISSING_VALUE)
+    if overall_mask.any():
+        overall_mse = ((preds - gts) ** 2)[overall_mask].mean().item()
+        overall_mae = (preds - gts).abs()[overall_mask].mean().item()
+        logger.info(
+            f"Overall (normalized, masked) - MSE: {overall_mse:.6f}, MAE: {overall_mae:.6f}"
+        )
 
     plot_dir = os.path.join(args.save_path, "e2e_val_plots")
     os.makedirs(plot_dir, exist_ok=True)
-    try:
-        import matplotlib.pyplot as plt
 
-        def plot_distribution(pred_vals, gt_vals, name, unit):
-            plt.figure(figsize=(6, 4))
-            # 使用相同的 bins，否则两组直方图柱宽会不一致
-            all_vals = np.concatenate([np.asarray(pred_vals).ravel(), np.asarray(gt_vals).ravel()])
-            bins = np.linspace(all_vals.min(), all_vals.max(), 31)
-            plt.hist(gt_vals, bins=bins, alpha=0.6, label="gt")
-            plt.hist(pred_vals, bins=bins, alpha=0.6, label="pred")
-            plt.title(f"{name} distribution")
-            plt.xlabel(unit)
-            plt.ylabel("count")
-            plt.legend()
-            save_path = os.path.join(plot_dir, f"{name.lower()}_dist.png")
-            plt.savefig(save_path, dpi=150, bbox_inches="tight")
-            plt.close()
-            logger.info(f"Saved distribution plot: {save_path}")
+    def _plot_distribution(pred_vals, gt_vals, name, unit, plot_dir):
+        try:
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            logger.warning(f"matplotlib unavailable: {exc}")
+            return
+        if len(pred_vals) == 0:
+            logger.info(f"  {name}: no valid samples, skipping plot")
+            return
+        plt.figure(figsize=(6, 4))
+        all_vals = np.concatenate([np.asarray(pred_vals).ravel(), np.asarray(gt_vals).ravel()])
+        bins = np.linspace(all_vals.min(), all_vals.max(), 31)
+        plt.hist(gt_vals, bins=bins, alpha=0.6, label="gt")
+        plt.hist(pred_vals, bins=bins, alpha=0.6, label="pred")
+        plt.title(f"{name} distribution")
+        plt.xlabel(unit)
+        plt.ylabel("count")
+        plt.legend()
+        save_path = os.path.join(plot_dir, f"{name.lower()}_dist.png")
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info(f"  saved distribution plot: {save_path}")
 
-        plot_distribution(ph_pred.numpy(), ph_gt.numpy(), "pH", "pH")
-        plot_distribution(salt_pred.numpy(), salt_gt.numpy(), "Salt", "%")
-        plot_distribution(temp_pred.numpy(), temp_gt.numpy(), "Temp", "C")
-    except Exception as exc:
-        logger.warning(f"Plotting failed: {exc}")
+    unit_map = {"ph": "pH", "temp": "C", "nacl": "%", "oxygen": "oxygen-class"}
+
+    for j, name in enumerate(property_list):
+        col_pred = preds[:, j]
+        col_gt = gts[:, j]
+        mask = (col_gt != MISSING_VALUE)
+        if not mask.any():
+            logger.info(f"  {name}: no valid labels, skip")
+            continue
+        pred_denorm = denormalize_property(col_pred[mask], name)
+        gt_denorm = denormalize_property(col_gt[mask], name)
+        mse_j = F.mse_loss(pred_denorm, gt_denorm).item()
+        mae_j = F.l1_loss(pred_denorm, gt_denorm).item()
+        n = int(mask.sum().item())
+        rng = PROPERTY_RANGES[name]
+        logger.info(
+            f"  {name} (n={n}, range {rng}): MSE={mse_j:.4f}, MAE={mae_j:.4f}"
+        )
+        _plot_distribution(
+            pred_denorm.numpy(), gt_denorm.numpy(),
+            name, unit_map.get(name, name),
+            plot_dir,
+        )
 
 
 if __name__ == "__main__":

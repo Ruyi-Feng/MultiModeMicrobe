@@ -8,8 +8,9 @@ import torch
 import yaml
 
 from exp.data_provider import ESM2Representation
-from exp.e2eprediction import load_aa_encoder
+from exp.e2eprediction import build_e2e_model, get_property_list, load_aa_encoder
 from model import E2EPrediction
+from model.property_encoder import PROPERTY_RANGES, denormalize_property
 
 
 def load_yaml_config(yml_path: str) -> dict:
@@ -63,16 +64,11 @@ def extract_h5_for_faa(
     return h5_path
 
 
-def build_e2e_model(cfg: dict, checkpoint_path: str, device: str) -> E2EPrediction:
+def build_model_from_cfg(cfg: dict, checkpoint_path: str, device: str) -> E2EPrediction:
     args = SimpleNamespace(**cfg)
     args.device = device
     aa_encoder = load_aa_encoder(args)
-    hidden_size = getattr(args, "hidden_size", args.cross_hidden_size)
-    model = E2EPrediction(
-        aa_encoder,
-        hidden_size=hidden_size,
-        property_dim=args.property_dim,
-    ).to(device)
+    model = build_e2e_model(args, aa_encoder).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
@@ -85,6 +81,7 @@ def predict_temperature_for_h5(
     model: E2EPrediction,
     h5_path: Path,
     device: str,
+    temp_index: int,
     max_seq_len: int | None = None,
 ) -> tuple[float, float]:
     with h5py.File(h5_path, "r") as f:
@@ -101,8 +98,9 @@ def predict_temperature_for_h5(
     with torch.no_grad():
         out = model(aa_seq, padding_mask=padding_mask)
         pred = out["pred"][0]
-    temp_norm = float(pred[2].item())
-    temp_celsius = temp_norm * 100.0
+    temp_norm = float(pred[temp_index].item())
+    # 用统一的 PROPERTY_RANGES 反归一化，避免旧的 ×100 假设
+    temp_celsius = float(denormalize_property(torch.tensor(temp_norm), "temp").item())
     return temp_norm, temp_celsius
 
 
@@ -170,17 +168,28 @@ def main():
         )
         h5_files.append(h5_path)
 
-    model = build_e2e_model(cfg=cfg, checkpoint_path=checkpoint_path, device=args.device)
+    model = build_model_from_cfg(cfg=cfg, checkpoint_path=checkpoint_path, device=args.device)
     max_seq_len = cfg.get("max_seq_len", None)
+
+    # 按训练时的 property_list 解析温度位置，不能硬编码 index
+    cfg_ns = SimpleNamespace(**cfg)
+    property_list = get_property_list(cfg_ns)
+    if "temp" not in property_list:
+        raise ValueError(
+            f"temp must be enabled in config (use_temp: True). Got property_list={property_list}"
+        )
+    temp_index = property_list.index("temp")
 
     print(f"\nLoaded config: {args.config_yml}")
     print(f"Loaded checkpoint: {checkpoint_path}")
+    print(f"Property list: {property_list}, temp_index={temp_index}, temp_range={PROPERTY_RANGES['temp']}")
     print(f"Using faa files in: {temp_compare_dir}\n")
     for faa_path, h5_path in zip(faa_files, h5_files):
         temp_norm, temp_c = predict_temperature_for_h5(
             model=model,
             h5_path=h5_path,
             device=args.device,
+            temp_index=temp_index,
             max_seq_len=max_seq_len,
         )
         print(
