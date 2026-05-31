@@ -109,22 +109,67 @@ def get_numerical_property_encoder(property_dim,
 
     return encoder, tokenizer   # tokenizer的第1维和seq的维度保持一致
 
+def _parse_property_string(s: str):
+    """容错解析：先 ast.literal_eval（Python 字面量），失败则 json.loads（JSON 真假空），
+    再失败则把 JSON 关键字替换后重试。返回 dict 或 None（None 表示解析失败）。"""
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        v = ast.literal_eval(s)
+        return v if isinstance(v, dict) else None
+    except (ValueError, SyntaxError):
+        pass
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, dict) else None
+    except json.JSONDecodeError:
+        pass
+    try:
+        s2 = (s.replace("null", "None")
+                .replace("true", "True")
+                .replace("false", "False"))
+        v = ast.literal_eval(s2)
+        return v if isinstance(v, dict) else None
+    except (ValueError, SyntaxError):
+        return None
+
+
+# 解析失败 warning 只打一次，避免训练日志被淹
+_PARSE_WARNED = {"flag": False}
+
+
 def numerical_property_tokenizer(property_seqs: list, device="cuda", property_list=["ph", "temp", "nacl", "oxygen"]):
+    import warnings
+
     batch_vec = []
+    n_fail = 0
+    first_fail_sample = None
     for property_seq in property_seqs:
         if isinstance(property_seq, str):
-            property_seq = property_seq.rstrip("\n").strip()
-            try:
-                parsed = ast.literal_eval(property_seq) if property_seq else {}
-            except (ValueError, SyntaxError):
-                # 解析失败时退化为"全缺失"，loss 端会 mask 掉
+            parsed = _parse_property_string(property_seq.rstrip("\n"))
+            if parsed is None:
+                n_fail += 1
+                if first_fail_sample is None:
+                    first_fail_sample = property_seq[:200]
                 parsed = {}
-        else:
+        elif isinstance(property_seq, dict):
             parsed = property_seq
-        if not isinstance(parsed, dict):
+        else:
             parsed = {}
         emb_vec = standardize_strain_features(parsed, property_list)
         batch_vec.append(emb_vec)
+
+    if n_fail > 0 and not _PARSE_WARNED["flag"]:
+        _PARSE_WARNED["flag"] = True
+        warnings.warn(
+            f"[numerical_property_tokenizer] {n_fail}/{len(property_seqs)} sample(s) "
+            f"failed to parse on this batch. First failing sample (truncated):\n"
+            f"  {first_fail_sample!r}\n"
+            f"This will cause masked MSE to be 0 if it happens for every batch. "
+            f"Check property.bin format vs extract_property_number key names."
+        )
+
     batch_vec = torch.tensor(np.stack(batch_vec, axis=0), dtype=torch.float32).to(device)
     return batch_vec  # [batch_size, len(property_list)]
 

@@ -29,6 +29,8 @@ from exp.dataset import IndividualDataset, CollectiveDataset
 from model import E2EPrediction, MicrobeProteinRepr, GumbalSoftmax, AttentionConvergence
 from model.property_encoder import (
     get_numerical_property_encoder,
+    extract_property_number,
+    _parse_property_string,
     PROPERTY_RANGES,
     MISSING_VALUE,
     denormalize_property,
@@ -199,6 +201,58 @@ def get_property_list(args):
         property_list.append("oxygen")
     return property_list
 
+
+def _sanity_check_targets(train_loader, tokenizer_p, property_list, args, logger):
+    """跑一遍第一 batch 的解析，确认 target 不是全 -1（loss=mae=0 的最常见原因）。"""
+    logger.info("=" * 80)
+    logger.info("[Sanity] Probing first batch targets...")
+    try:
+        sample_batch = next(iter(train_loader))
+    except StopIteration:
+        logger.error("[Sanity] train_loader is empty!")
+        return
+    batch_p = sample_batch[0]
+
+    # 1) 原始字符串
+    for i, raw in enumerate(batch_p[:3]):
+        logger.info(f"  raw[{i}] = {raw[:300]!r}")
+    # 2) 解析后字典 + extract_property_number 输出
+    for i, raw in enumerate(batch_p[:3]):
+        parsed = _parse_property_string(raw.rstrip("\n")) if isinstance(raw, str) else raw
+        logger.info(f"  parsed[{i}] = {parsed}")
+        if isinstance(parsed, dict):
+            ph, temp, nacl, oxygen = extract_property_number(parsed)
+            logger.info(
+                f"  extract[{i}]: ph={ph}, temp={temp}, nacl={nacl}, oxygen={oxygen}"
+            )
+
+    # 3) tokenizer 输出 + 有效率
+    tgt = tokenizer_p(batch_p, args.device, property_list=property_list)
+    logger.info(f"  tgt shape = {tuple(tgt.shape)}")
+    for j, name in enumerate(property_list):
+        col = tgt[:, j]
+        valid = (col != MISSING_VALUE)
+        n_valid = int(valid.sum().item())
+        if n_valid > 0:
+            logger.info(
+                f"  {name}: valid={n_valid}/{tgt.size(0)}, "
+                f"min={col[valid].min().item():.4f}, max={col[valid].max().item():.4f}"
+            )
+        else:
+            logger.info(f"  {name}: valid=0/{tgt.size(0)}  <-- ALL MISSING")
+
+    if (tgt == MISSING_VALUE).all():
+        logger.error(
+            "[Sanity] ALL targets in the first batch are -1 (missing). "
+            "Loss & MAE will be 0. Likely cause:\n"
+            "  (a) property.bin 字符串无法被 ast.literal_eval/json.loads 解析\n"
+            "  (b) dict 的 key 名与 extract_property_number 里 "
+            "[culture_pH_optimum / culture_temp_optimum / NaCl_optimum / "
+            "Oxygen Tolerance] 不一致\n"
+            "  (c) value 是 list/string-with-unit 等无法 float() 的类型"
+        )
+    logger.info("=" * 80)
+
 def train():
     args = train_args()
     property_list = get_property_list(args)
@@ -226,6 +280,9 @@ def train():
         args.property_dim,
         getattr(args, "property_embedding_dim", 128),
     )
+
+    # 一次性诊断：检查标签是否能正确解析（loss/mae 长期为 0 的最常见根因）
+    _sanity_check_targets(train_loader, tokenizer_p, property_list, args, logger)
 
     aa_encoder = load_aa_encoder(args)
     model = build_e2e_model(args, aa_encoder)
